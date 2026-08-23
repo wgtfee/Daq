@@ -1,0 +1,948 @@
+﻿using Opc.Ua;
+using Opc.Ua.Configuration;
+using Opc.Ua.Server;
+using Snet.Core.extend;
+using Snet.Iot.Daq.Core.opc.core;
+using Snet.Iot.Daq.Core.opc.ua.service.core.ReferenceServer;
+using Snet.Model.data;
+using Snet.Model.@interface;
+using Snet.Utility;
+using System.Collections.Concurrent;
+using System.Security.Cryptography.X509Certificates;
+
+namespace Snet.Iot.Daq.Core.opc.ua.service
+{
+    /// <summary>
+    /// OPC UA 服务端操作类，基于 OPC Foundation UA SDK 实现 OPC UA Server 服务。
+    /// <para>支持地址空间管理（创建/移除文件夹和地址）、会话管理、订阅监控、数据读写等功能。</para>
+    /// </summary>
+    public class OpcUaServiceOperate : CoreUnify<OpcUaServiceOperate, OpcUaServiceData.Basics>, IOn, IOff, IRead, IWrite, IStatus, IDisposable, IAsyncDisposable
+    {
+        /// <summary>
+        /// 无参构造函数
+        /// </summary>
+        public OpcUaServiceOperate() : base() { }
+        /// <summary>
+        /// 有参构造函数
+        /// </summary>
+        /// <param name="basics">基础数据</param>
+        public OpcUaServiceOperate(OpcUaServiceData.Basics basics) : base(basics) { }
+
+        /// <summary>
+        /// OPCUA 安装、配置、运行
+        /// </summary>
+        private ApplicationInstance? AI { get; set; }
+
+        /// <summary>
+        /// opcua服务
+        /// </summary>
+        private ReferenceServer? service;
+
+        /// <summary>
+        /// 遥测
+        /// </summary>
+        private UaTelemetry Telemetry { get; set; } = new UaTelemetry(UaTelemetry.OpcType.Service);
+
+        /// <summary>
+        /// 最后活动时间
+        /// </summary>
+        private DateTime LastEventTime;
+
+        /// <summary>
+        /// 全局生命周期令牌
+        /// </summary>
+        private CancellationTokenSource? tokenSource;
+
+        /// <summary>
+        /// 状态监控后台任务（保存引用以便关闭时等待完成）
+        /// </summary>
+        private Task? _statusTask;
+
+        /// <summary>
+        /// 是否已启动
+        /// </summary>
+        public bool IsStart { get; private set; }
+
+        #region 私有函数
+
+        /// <summary>
+        /// 加载用户指定的服务端应用证书（PFX）。
+        /// 校验私钥、有效期、密钥大小及 SAN 是否覆盖监听地址，不满足则抛出明确错误；
+        /// 校验通过后把证书复制到 SDK 证书存储，返回标准的证书标识供 SDK 加载。
+        /// </summary>
+        /// <param name="config">应用配置</param>
+        /// <param name="cerRoot">证书根目录</param>
+        /// <returns>仅包含指定证书的应用证书集合</returns>
+        private CertificateIdentifierCollection LoadApplicationCertificate(ApplicationConfiguration config, string cerRoot)
+        {
+            if (string.IsNullOrWhiteSpace(basics.SecreKey))
+            {
+                throw new ArgumentException("服务端应用证书密钥（SecreKey）不能为空");
+            }
+            if (!File.Exists(basics.Cer))
+            {
+                throw new ArgumentException($"服务端应用证书文件不存在：{basics.Cer}");
+            }
+
+            using var certificate = new X509Certificate2(
+                basics.Cer,
+                basics.SecreKey,
+                X509KeyStorageFlags.MachineKeySet | X509KeyStorageFlags.Exportable);
+
+            if (!certificate.HasPrivateKey)
+            {
+                throw new ArgumentException("服务端应用证书不包含私钥，请提供含私钥的 PFX 证书");
+            }
+            if (DateTime.UtcNow < certificate.NotBefore || DateTime.UtcNow > certificate.NotAfter)
+            {
+                throw new ArgumentException($"服务端应用证书已过期（有效期至 {certificate.NotAfter:yyyy-MM-dd}）");
+            }
+            if (X509Utils.GetPublicKeySize(certificate) < config.SecurityConfiguration.MinimumCertificateKeySize)
+            {
+                throw new ArgumentException("服务端应用证书密钥长度不足");
+            }
+
+            //OPC UA 服务端证书必须包含监听地址的 SAN 域名，否则严格客户端会拒绝连接
+            IList<string> domains = X509Utils.GetDomainsFromCertificate(certificate);
+            string listenHost = basics.IpAddress == "0.0.0.0" ? Utils.GetHostName() : basics.IpAddress;
+            bool hasDomain = domains.Any(d =>
+                string.Equals(d, basics.IpAddress, StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(d, "localhost", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(d, listenHost, StringComparison.OrdinalIgnoreCase));
+            if (!hasDomain)
+            {
+                throw new ArgumentException(
+                    $"服务端应用证书的 SAN 域名（{string.Join(", ", domains)}）不包含监听地址 {basics.IpAddress}，无法作为服务端证书");
+            }
+
+            //OPC UA 服务端证书必须包含配置的 ApplicationUri（SAN 的 uri:... 扩展），否则客户端验证会拒绝
+            if (!X509Utils.CompareApplicationUriWithCertificate(
+                certificate,
+                config.ApplicationUri,
+                out IReadOnlyList<string> certificateUris))
+            {
+                throw new ArgumentException(
+                    $"服务端应用证书不包含 OPC UA ApplicationUri（{config.ApplicationUri}），" +
+                    $"证书中的 uri 扩展：{(certificateUris.Count > 0 ? string.Join(", ", certificateUris) : "无")}。请使用 OPC UA 工具生成含此 ApplicationUri 的证书");
+            }
+
+            //复制到 SDK 证书存储（certs 放公钥 der，private 放私钥 pfx），并让 SDK 使用 SecreKey 解密私钥
+            string certsDir = Path.Combine(cerRoot, "certs");
+            string privateDir = Path.Combine(cerRoot, "private");
+            Directory.CreateDirectory(certsDir);
+            Directory.CreateDirectory(privateDir);
+            string certName = certificate.Thumbprint;
+            File.WriteAllBytes(Path.Combine(certsDir, $"{certName}.der"), certificate.RawData);
+            File.WriteAllBytes(Path.Combine(privateDir, $"{certName}.pfx"),
+                certificate.Export(X509ContentType.Pfx, basics.SecreKey));
+            config.SecurityConfiguration.CertificatePasswordProvider =
+                new CertificatePasswordProvider(basics.SecreKey.ToCharArray());
+
+            return new CertificateIdentifierCollection
+            {
+                new CertificateIdentifier
+                {
+                    StoreType = CertificateStoreType.Directory,
+                    StorePath = cerRoot,
+                    SubjectName = certificate.Subject,
+                    Thumbprint = certificate.Thumbprint,
+                    CertificateTypeString = "RsaSha256"
+                }
+            };
+        }
+
+        /// <summary>
+        /// 配置证书认证所需的用户证书信任存储。
+        /// 客户端用户证书（公开部分）需放入信任目录，签发 CA 证书放入 issuerUser 目录，
+        /// 未受信任的客户端证书将在会话激活阶段被拒绝。
+        /// 信任目录优先使用 VerifyClientCerPublicKeyPath（用户可配置），未配置时回退到 cerRoot\trustedUser。
+        /// </summary>
+        /// <param name="config">应用配置</param>
+        /// <param name="cerRoot">证书根目录</param>
+        private void ConfigureUserCertificateStores(ApplicationConfiguration config, string cerRoot)
+        {
+            string trustedUserPath = !string.IsNullOrWhiteSpace(basics.TrustedUserPath)
+                ? basics.TrustedUserPath
+                : Path.Combine(cerRoot, "trusted");
+            string issuerUserPath = Path.Combine(Path.GetDirectoryName(trustedUserPath) ?? cerRoot, "issuer");
+            Directory.CreateDirectory(trustedUserPath);
+            Directory.CreateDirectory(issuerUserPath);
+
+            config.SecurityConfiguration.TrustedUserCertificates = new CertificateTrustList
+            {
+                StoreType = CertificateStoreType.Directory,
+                StorePath = trustedUserPath
+            };
+            config.SecurityConfiguration.UserIssuerCertificates = new CertificateTrustList
+            {
+                StoreType = CertificateStoreType.Directory,
+                StorePath = issuerUserPath
+            };
+        }
+
+        /// <summary>
+        /// 启动线程
+        /// </summary>
+        private async Task StatusThreadAsync(CancellationToken token)
+        {
+            await Task.Run(async () =>
+            {
+                while (service != null)
+                {
+                    if (DateTime.UtcNow - LastEventTime > TimeSpan.FromMilliseconds(5000))
+                    {
+                        IList<ISession> sessions = service.CurrentInstance.SessionManager.GetSessions();
+                        for (int ii = 0; ii < sessions.Count; ii++)
+                        {
+                            ISession session = sessions[ii];
+                            PrintSessionStatus(session, "心跳包", true);
+                        }
+                        LastEventTime = DateTime.UtcNow;
+                    }
+                    await Task.Delay(1000, token).ConfigureAwait(false);
+                }
+            }, token);
+        }
+
+        /// <summary>
+        /// 会话状态
+        /// </summary>
+        private void SessionManager_Session(ISession session, SessionEventReason reason)
+        {
+            LastEventTime = DateTime.UtcNow;
+            PrintSessionStatus(session, reason.ToString());
+        }
+
+        /// <summary>
+        /// 订阅状态
+        /// </summary>
+        private void SubscriptionManager_Subscription(ISubscription subscription, bool deleted)
+        {
+            LastEventTime = DateTime.UtcNow;
+            PrintSessionStatus(subscription.Session, deleted ? "取消订阅" : "订阅");
+        }
+
+        /// <summary>
+        /// 打印会话状态
+        /// </summary>
+        /// <param name="session">会话对象</param>
+        /// <param name="reason">原因</param>
+        /// <param name="IsHeartbeatPacket">是不是心跳包</param>
+        private void PrintSessionStatus(ISession session, string reason, bool IsHeartbeatPacket = false)
+        {
+            if (session == null) return;
+            string ClientID = session.Id.ToString();
+            string item = String.Format("[ {0} ] ( {1} ) {2}", session.SessionDiagnostics.SessionName, ClientID, reason.Equals("Created") ? "创建" : reason.Equals("Activated") ? "激活" : reason.Equals("Closing") ? "结束" : reason.Equals("Impersonating") ? "新身份激活" : reason);
+            if (IsHeartbeatPacket)
+            {
+                item += String.Format(":{0:HH:mm:ss}", session.SessionDiagnostics.ClientLastContactTime.ToLocalTime());
+            }
+
+            if (reason.Equals("Closing"))
+            {
+                //当会话关闭 则释放此会话
+                session.Dispose();
+            }
+
+            //事件抛出
+            OnInfoEventHandler(this, new EventInfoResult(true, item));
+        }
+
+        #endregion 私有函数
+
+        /// <summary>
+        /// 文件夹信息
+        /// </summary>
+        private readonly ConcurrentDictionary<string, FolderState> FolderInfo = new();
+
+        /// <summary>
+        /// 创建文件夹
+        /// </summary>
+        /// <returns></returns>
+        public OperateResult CreateFolder(string folderName, FolderState? fs = null)
+        {
+            //开始记录运行时间
+            BegOperate();
+            try
+            {
+                if (!GetStatus().GetDetails(out string? message))
+                {
+                    return EndOperate(false, message);
+                }
+
+                string key = folderName;
+                if (fs != null)
+                {
+                    key = $"{fs.NodeId.Identifier}.{folderName}";
+                }
+                else
+                {
+                    key = $"{basics.AddressSpaceName}.{folderName}";
+                }
+                //不存在此节点，创建一个
+                if (!FolderInfo.ContainsKey(key))
+                {
+                    FolderState folder = service.NodeManage.CreateFolder(folderName, fs);
+                    if (folder == null)
+                    {
+                        return EndOperate(false, $"{folderName} 文件夹创建失败，原因未知");
+                    }
+                    FolderInfo.AddOrUpdate(folder.NodeId.Identifier.ToString(), folder, (k, v) => folder);
+                    return EndOperate(true, resultData: folder);
+                }
+                else
+                {
+                    return EndOperate(false, $"文件夹创建失败，已存在此同名文件夹");
+                }
+            }
+            catch (Exception ex)
+            {
+                return EndOperate(false, ex.Message, exception: ex);
+            }
+        }
+
+        /// <summary>
+        /// 移除文件夹
+        /// </summary>
+        /// <param name="folderNameArray">文件夹集合</param>
+        /// <returns>统一出参</returns>
+        public OperateResult RemoveFolder(List<NodeId> folderNameArray)
+        {
+            //开始记录运行时间
+            BegOperate();
+            try
+            {
+                if (!GetStatus().GetDetails(out string? message))
+                {
+                    return EndOperate(false, message);
+                }
+
+                OperateResult result = service.NodeManage.RemoveFolder(folderNameArray);
+                if (result.Status)
+                {
+                    var failMessages = new List<string>();
+                    //在看外部是否存在此文件夹，有的话就移除
+                    foreach (NodeId item in folderNameArray)
+                    {
+                        List<KeyValuePair<string, FolderState>> pair = FolderInfo.Where(c => c.Value.NodeId.ToString() == item.ToString() || c.Value.NodeId.ToString().Contains(item.ToString())).ToList();
+                        foreach (var index in pair)
+                        {
+                            if (!FolderInfo.TryRemove(index))
+                            {
+                                failMessages.Add($"{index.Value.NodeId.Identifier} 删除失败");
+                            }
+                        }
+                    }
+                    if (failMessages.Count > 0)
+                    {
+                        return EndOperate(false, $"内部异常：{failMessages.ToJson(true)}");
+                    }
+                    return EndOperate(true);
+                }
+                else
+                {
+                    return EndOperate(result);
+                }
+            }
+            catch (Exception ex)
+            {
+                return EndOperate(false, ex.Message, exception: ex);
+            }
+        }
+
+        /// <summary>
+        /// 创建地址，通过对应文件夹创建
+        /// </summary>
+        /// <param name="addresses">地址集合</param>
+        /// <param name="folderState">文件夹对象</param>
+        /// <returns>统一出参</returns>
+        public OperateResult CreateAddress(List<AddressBody> addresses, FolderState? folderState = null)
+        {
+            //开始记录运行时间
+            BegOperate();
+            try
+            {
+                if (!GetStatus().GetDetails(out string? message))
+                {
+                    return EndOperate(false, message);
+                }
+                //创建节点
+                OperateResult result = service.NodeManage.CreateAddress(addresses, folderState);
+                if (result.Status)
+                {
+                    //把点位信息存入内存
+                    List<AddressBody>? resultData = result.GetSource<List<AddressBody>>();
+                    if (resultData == null)
+                    {
+                        return EndOperate(false, $"地址创建失败，原因未知");
+                    }
+                }
+                else
+                {
+                    return EndOperate(false, result.Message);
+                }
+                return EndOperate(true);
+            }
+            catch (Exception ex)
+            {
+                return EndOperate(false, ex.Message, exception: ex);
+            }
+        }
+
+        /// <summary>
+        /// 导入地址
+        /// </summary>
+        /// <returns></returns>
+        public OperateResult IncAddress(NodeBody node, FolderState? folder = null)
+        {
+            //开始记录运行时间
+            BegOperate();
+            try
+            {
+                if (!GetStatus().GetDetails(out string? message))
+                {
+                    return EndOperate(false, message);
+                }
+                //创建节点
+                OperateResult result = service.NodeManage.StructuralBodyCreateAddress(node, folder);
+                FolderState? folderState = result.GetSource<FolderState>();
+                if (folderState == null)
+                {
+                    return EndOperate(false, $"导入地址失败，原因未知");
+                }
+                FolderInfo.AddOrUpdate(folderState.NodeId.Identifier.ToString(), folderState, (k, v) => folderState);
+                return EndOperate(true, resultData: folderState);
+            }
+            catch (Exception ex)
+            {
+                return EndOperate(false, ex.Message, exception: ex);
+            }
+        }
+
+        /// <summary>
+        /// 获取已创建的地址
+        /// </summary>
+        /// <returns>统一出参</returns>
+        public OperateResult GetAddressArray()
+        {
+            //开始记录运行时间
+            BegOperate();
+            try
+            {
+                if (!GetStatus().GetDetails(out string? message))
+                {
+                    return EndOperate(false, message);
+                }
+                //地址名称集合
+                List<string> addresss = service.NodeManage.GetAddressArray();
+                if (addresss.Count > 0)
+                {
+                    return EndOperate(true, "地址获取成功", addresss);
+                }
+                return EndOperate(false, "地址获取失败，地址尚未创建");
+            }
+            catch (Exception ex)
+            {
+                return EndOperate(false, ex.Message, exception: ex);
+            }
+        }
+
+
+        /// <summary>
+        /// 移除地址
+        /// </summary>
+        /// <param name="addressNames">地址名称</param>
+        /// <returns>统一出参</returns>
+        public OperateResult RemoveAddress(List<AddressBody> addressNames)
+        {
+            //开始记录运行时间
+            BegOperate();
+            try
+            {
+                if (!IsStart)
+                {
+                    return EndOperate(false, "未启动");
+                }
+                return EndOperate(service.NodeManage.RemoveAddress(addressNames));
+            }
+            catch (Exception ex)
+            {
+                return EndOperate(false, ex.Message, exception: ex);
+            }
+        }
+
+        /// <inheritdoc/>
+        public OperateResult On() => OnAsync().GetAwaiter().GetResult();
+        /// <inheritdoc/>
+        public OperateResult Off(bool hardClose = false) => OffAsync(hardClose).GetAwaiter().GetResult();
+        /// <inheritdoc/>
+        public OperateResult Write(ConcurrentDictionary<string, (object value, Model.@enum.EncodingType? encodingType)> values) => WriteAsync(values).GetAwaiter().GetResult();
+        /// <inheritdoc/>
+        public OperateResult Write(ConcurrentDictionary<string, object> values) => WriteAsync(values).GetAwaiter().GetResult();
+        /// <inheritdoc/>
+        public OperateResult Write(ConcurrentDictionary<string, WriteModel> values) => WriteAsync(values).GetAwaiter().GetResult();
+        /// <inheritdoc/>
+        public OperateResult Read(Address address) => ReadAsync(address).GetAwaiter().GetResult();
+        /// <inheritdoc/>
+        public OperateResult GetStatus() => GetStatusAsync().GetAwaiter().GetResult();
+
+
+        /// <inheritdoc/>
+        public async Task<OperateResult> OffAsync(bool hardClose = false, CancellationToken token = default)
+        {
+            //开始记录运行时间
+            await BegOperateAsync(token);
+            try
+            {
+                if (!hardClose)
+                {
+                    if (!(await GetStatusAsync(token)).GetDetails(out string? message))
+                    {
+                        return await EndOperateAsync(false, message, token: token);
+                    }
+                }
+                // 取消并释放令牌，等待后台状态线程退出
+                if (tokenSource != null)
+                {
+                    tokenSource.Cancel();
+                    try { await _statusTask; } catch (OperationCanceledException) { }
+                    tokenSource.Dispose();
+                    tokenSource = null;
+                    _statusTask = null;
+                }
+                if (service != null)
+                {
+                    FolderInfo.Clear();
+                    // 先清理地址空间，再 Dispose（避免 use-after-dispose）
+                    service.NodeManage?.DeleteAddressSpace();
+                    service.NodeManage?.Dispose();
+                    // 停止服务并处理
+                    await service.StopAsync();
+                    service.Dispose();
+                    // 停止状态线程
+                    service = null;
+                }
+                IsStart = false;
+                return await EndOperateAsync(true, token: token);
+            }
+            catch (Exception ex)
+            {
+                return await EndOperateAsync(false, ex.Message, exception: ex, token: token);
+            }
+        }
+        /// <inheritdoc/>
+        public async Task<OperateResult> OnAsync(CancellationToken token = default)
+        {
+            //开始记录运行时间
+            await BegOperateAsync(token);
+            try
+            {
+                if ((await GetStatusAsync(token)).GetDetails(out string? message))
+                {
+                    return await EndOperateAsync(false, message, token: token);
+                }
+                string tag = basics.Tag;
+                //实例化对象
+                AI = new ApplicationInstance(Telemetry)
+                {
+                    ApplicationName = basics.Tag,
+                    ApplicationType = ApplicationType.Server,
+                    ConfigSectionName = basics.Tag,
+                    CertificatePasswordProvider = new CertificatePasswordProvider(basics.Password.ToCharArray())
+                };
+
+                //拼接地址
+                string uri = $"{Utils.UriSchemeOpcTcp}://{basics.IpAddress}:{basics.Port}/{tag}";
+                //为UA应用配置创建一个构建器
+                var serverConfig = AI.Build($"urn:localhost:UA:{tag}", $"uri:opcfoundation.org:{tag}")
+                    .SetOperationTimeout(120000)
+                    .SetMaxStringLength(1048576)
+                    .SetMaxByteStringLength(1048576)
+                    .SetMaxArrayLength(65535)
+                    .SetMaxMessageSize(4194304)
+                    .SetMaxBufferSize(65535)
+                    .SetChannelLifetime(30000)
+                    .SetSecurityTokenLifetime(3600000)
+                    .AsServer([uri]);
+
+                //添加验证方式
+                //serverConfig.AddPolicy(MessageSecurityMode.SignAndEncrypt, SecurityPolicies.Basic256Sha256)
+                //   .AddPolicy(MessageSecurityMode.Sign, SecurityPolicies.ECC_nistP256)
+                //   .AddPolicy(MessageSecurityMode.Sign, SecurityPolicies.ECC_nistP384)
+                //   .AddPolicy(MessageSecurityMode.Sign, SecurityPolicies.ECC_brainpoolP256r1)
+                //   .AddPolicy(MessageSecurityMode.Sign, SecurityPolicies.ECC_brainpoolP384r1)
+                //   .AddPolicy(MessageSecurityMode.Sign, SecurityPolicies.Basic256)
+                //   .AddPolicy(MessageSecurityMode.SignAndEncrypt, SecurityPolicies.ECC_nistP256)
+                //   .AddPolicy(MessageSecurityMode.SignAndEncrypt, SecurityPolicies.ECC_nistP384)
+                //   .AddPolicy(MessageSecurityMode.SignAndEncrypt, SecurityPolicies.ECC_brainpoolP256r1)
+                //   .AddPolicy(MessageSecurityMode.SignAndEncrypt, SecurityPolicies.ECC_brainpoolP384r1)
+                //   .AddPolicy(MessageSecurityMode.SignAndEncrypt, SecurityPolicies.Basic256)
+                //   .AddSignPolicies()
+                //   .AddSignAndEncryptPolicies();
+
+                //设置参数
+                serverConfig.SetOperationLimits(new OperationLimits()
+                {
+                    MaxNodesPerBrowse = 2500,
+                    MaxNodesPerRead = 2500,
+                    MaxNodesPerWrite = 2500,
+                    MaxNodesPerMethodCall = 2500,
+                    MaxMonitoredItemsPerCall = 2500,
+                    MaxNodesPerHistoryReadData = 1000,
+                    MaxNodesPerHistoryReadEvents = 2500,
+                    MaxNodesPerHistoryUpdateData = 2500,
+                    MaxNodesPerHistoryUpdateEvents = 2500,
+                    MaxNodesPerNodeManagement = 2500,
+                    MaxNodesPerRegisterNodes = 2500,
+                    MaxNodesPerTranslateBrowsePathsToNodeIds = 2500,
+                });
+                serverConfig.SetAvailableSamplingRates(new SamplingRateGroupCollection(new List<SamplingRateGroup>
+                {
+                    new SamplingRateGroup(5, 5, 20),
+                    new SamplingRateGroup(100, 100, 4),
+                    new SamplingRateGroup(500, 250, 2),
+                    new SamplingRateGroup(1000, 500, 20),
+                }));
+
+                //设置其他参数
+                serverConfig.SetMaxChannelCount(1000);
+                serverConfig.SetAuditingEnabled(true);
+                serverConfig.SetHttpsMutualTls(true);
+                serverConfig.SetDiagnosticsEnabled(true);
+                serverConfig.SetMaxSessionCount(75);
+                serverConfig.SetMinSessionTimeout(1000);
+                serverConfig.SetMaxSessionTimeout(3600000);
+                serverConfig.SetMaxBrowseContinuationPoints(10);
+                serverConfig.SetMaxQueryContinuationPoints(10);
+                serverConfig.SetMaxHistoryContinuationPoints(100);
+                serverConfig.SetMaxRequestAge(600000);
+                serverConfig.SetMinPublishingInterval(50);
+                serverConfig.SetMaxPublishingInterval(3600000);
+                serverConfig.SetPublishingResolution(50);
+                serverConfig.SetMaxSubscriptionLifetime(3600000);
+                serverConfig.SetMaxMessageQueueSize(100);
+                serverConfig.SetMaxNotificationQueueSize(100);
+                serverConfig.SetMaxNotificationsPerPublish(1000);
+                serverConfig.SetMinMetadataSamplingInterval(1000);
+                serverConfig.SetMaxRegistrationInterval(0);
+                serverConfig.SetNodeManagerSaveFile($"{tag}.Nodes.Json");
+                serverConfig.SetMinSubscriptionLifetime(10000);
+                serverConfig.SetMaxPublishRequestCount(20);
+                serverConfig.SetMaxSubscriptionCount(100);
+                serverConfig.SetMaxEventQueueSize(10000);
+                serverConfig.SetDurableSubscriptionsEnabled(true);
+                serverConfig.SetMaxDurableNotificationQueueSize(10000);
+                serverConfig.SetMaxDurableEventQueueSize(10000);
+                serverConfig.SetMaxDurableSubscriptionLifetime(10);
+
+                var cerRoot = Data.AppCerPath;
+                ApplicationConfiguration config = await serverConfig.AddSecurityConfiguration(new CertificateIdentifierCollection(new List<CertificateIdentifier>
+                {
+                    new CertificateIdentifier{StoreType="Directory", StorePath=cerRoot,SubjectName=$"CN={tag}, C=US, S=Arizona, O=OPC Foundation, DC=localhost",CertificateTypeString="RsaSha256"},
+                    new CertificateIdentifier{StoreType="Directory", StorePath=cerRoot,SubjectName=$"CN={tag}, C=US, S=Arizona, O=OPC Foundation, DC=localhost",CertificateTypeString="NistP256"},
+                    new CertificateIdentifier{StoreType="Directory", StorePath=cerRoot,SubjectName=$"CN={tag}, C=US, S=Arizona, O=OPC Foundation, DC=localhost",CertificateTypeString="NistP384"},
+                    new CertificateIdentifier{StoreType="Directory", StorePath=cerRoot,SubjectName=$"CN={tag}, C=US, S=Arizona, O=OPC Foundation, DC=localhost",CertificateTypeString="BrainpoolP256r1"},
+                    new CertificateIdentifier{StoreType="Directory", StorePath=cerRoot,SubjectName=$"CN={tag}, C=US, S=Arizona, O=OPC Foundation, DC=localhost",CertificateTypeString="BrainpoolP384r1"},
+                })).SetAutoAcceptUntrustedCertificates(true)
+                    .SetRejectSHA1SignedCertificates(true)
+                    .SetRejectUnknownRevocationStatus(true)
+                    .SetMinimumCertificateKeySize(2048)
+                    .SetMaxRejectedCertificates(5)
+                    .SetAddAppCertToTrustedStore(false)
+                    .SetSendCertificateChain(true)
+                    .SetOutputFilePath(Path.Combine("logs", $"{tag}.log"))
+                   .CreateAsync(ct: token);
+                //设置 Nonce 长度
+                config.SecurityConfiguration.NonceLength = 32;
+                //添加权限
+                switch (basics.AType)
+                {
+                    case Data.AuType.Anonymous:
+                        serverConfig.AddUserTokenPolicy(UserTokenType.Anonymous);
+                        break;
+                    case Data.AuType.UserName:
+                        if (string.IsNullOrWhiteSpace(basics.UserName) || string.IsNullOrWhiteSpace(basics.Password))
+                        {
+                            await OffAsync(true, token);
+                            return await EndOperateAsync(false, "账号或密码不能为空", token: token);
+                        }
+                        serverConfig.AddUserTokenPolicy(UserTokenType.UserName);
+                        break;
+                    case Data.AuType.Certificate:
+                        serverConfig.AddUserTokenPolicy(UserTokenType.Certificate);
+                        break;
+                }
+
+                //证书认证：配置用户证书信任存储
+                if (basics.AType == Data.AuType.Certificate)
+                {
+                    ConfigureUserCertificateStores(config, cerRoot);
+                    await OnInfoEventHandlerAsync(this, new EventInfoResult(true,
+                        $"证书认证已启用，客户端用户证书公钥（.der 文件）请放入 {Path.Combine(config.SecurityConfiguration.TrustedUserCertificates.StorePath, "certs")} 目录"));
+
+                    //服务端应用证书：Cer/SecreKey 需成对配置，都为空则走自动生成
+                    bool hasCer = !string.IsNullOrWhiteSpace(basics.Cer);
+                    bool hasKey = !string.IsNullOrWhiteSpace(basics.SecreKey);
+                    if (hasCer != hasKey)
+                    {
+                        await OffAsync(true, token);
+                        return await EndOperateAsync(false,
+                            hasCer ? "已配置服务端应用证书（Cer），但未配置证书密钥（SecreKey）" : "已配置服务端应用证书密钥（SecreKey），但未配置证书路径（Cer）",
+                            token: token);
+                    }
+                }
+
+                //检查是否有有效的应用实例证书。
+                //用户指定了服务端应用证书时，先复制到 SDK 证书存储并加载私钥，
+                //跳过 SDK 的自动生成与 ApplicationUri 校验（通用证书不含 UA ApplicationUri 扩展）
+                bool haveAppCertificate;
+                if (!string.IsNullOrWhiteSpace(basics.Cer))
+                {
+                    config.SecurityConfiguration.ApplicationCertificates = LoadApplicationCertificate(config, cerRoot);
+                    foreach (CertificateIdentifier id in config.SecurityConfiguration.ApplicationCertificates)
+                    {
+                        id.Certificate = await id.LoadPrivateKeyExAsync(
+                            config.SecurityConfiguration.CertificatePasswordProvider,
+                            config.ApplicationUri,
+                            Telemetry,
+                            token);
+                    }
+                    haveAppCertificate = config.SecurityConfiguration.ApplicationCertificates.All(
+                        id => id.Certificate?.HasPrivateKey == true);
+                    await OnInfoEventHandlerAsync(this, new EventInfoResult(true,
+                        $"服务端应用证书使用指定证书：{basics.Cer}"));
+                }
+                else
+                {
+                    haveAppCertificate = await AI.CheckApplicationInstanceCertificatesAsync(true, ct: token);
+                }
+                if (!haveAppCertificate)
+                {
+                    await OffAsync(true, token);
+                    return await EndOperateAsync(false, "应用实例证书无效", token: token);
+                }
+
+                //实例化
+                service = new ReferenceServer(basics.UserName, basics.Password, basics.AType, basics.AutoCreateAddress, basics.AddressSpaceName, OnDataEventHandler);
+
+                //启动服务
+                await AI.StartAsync(service);
+
+                //打印信息
+                var endpoints = AI.Server.GetEndpoints().Select(e => e.EndpointUrl).Distinct();
+                foreach (var endpoint in endpoints)
+                {
+                    //事件抛出
+                    await OnInfoEventHandlerAsync(this, new EventInfoResult(true, endpoint));
+                }
+                if (tokenSource == null)
+                {
+                    tokenSource = new CancellationTokenSource();
+                }
+
+                // 启动状态线程（保存 Task 引用，Off() 时可正确等待）
+                _statusTask = StatusThreadAsync(tokenSource.Token);
+
+                //激活
+                service.CurrentInstance.SessionManager.SessionActivated += SessionManager_Session;
+                //关闭
+                service.CurrentInstance.SessionManager.SessionClosing += SessionManager_Session;
+                //创建
+                service.CurrentInstance.SessionManager.SessionCreated += SessionManager_Session;
+                //创建订阅
+                service.CurrentInstance.SubscriptionManager.SubscriptionCreated += SubscriptionManager_Subscription;
+                //删除订阅
+                service.CurrentInstance.SubscriptionManager.SubscriptionDeleted += SubscriptionManager_Subscription;
+
+                IsStart = true;
+                return await EndOperateAsync(true, token: token);
+            }
+            catch (Exception ex)
+            {
+                await OffAsync(true, token);
+                return await EndOperateAsync(false, ex.Message, exception: ex, token: token);
+            }
+        }
+        /// <inheritdoc/>
+        public async Task<OperateResult> ReadAsync(Address address, CancellationToken token = default)
+        {
+            //开始记录运行时间
+            await BegOperateAsync(token);
+            try
+            {
+                if (!(await GetStatusAsync(token)).GetDetails(out string? message))
+                {
+                    return await EndOperateAsync(false, message, token: token);
+                }
+                return await EndOperateAsync(service.NodeManage.ReadAddress(address), token: token);
+            }
+            catch (Exception ex)
+            {
+                return await EndOperateAsync(false, ex.Message, exception: ex, token: token);
+            }
+        }
+        /// <inheritdoc/>
+        public async Task<OperateResult> WriteAsync(ConcurrentDictionary<string, (object value, Model.@enum.EncodingType? encodingType)> values, CancellationToken token = default)
+        {
+            //开始记录运行时间
+            await BegOperateAsync(token);
+            try
+            {
+                if (!(await GetStatusAsync(token)).GetDetails(out string? message))
+                {
+                    return await EndOperateAsync(false, message, token: token);
+                }
+                // 将元组值转换为 object 字典（单线程路径，无需并发容器）
+                var targetDict = new ConcurrentDictionary<string, object>();
+                foreach (var kvp in values)
+                    targetDict[kvp.Key] = kvp.Value;
+                return await WriteAsync(targetDict, token);
+            }
+            catch (Exception ex)
+            {
+                return await EndOperateAsync(false, ex.Message, exception: ex, token: token);
+            }
+        }
+        /// <inheritdoc/>
+        public async Task<OperateResult> WriteAsync(ConcurrentDictionary<string, object> values, CancellationToken token = default)
+        {
+            //开始记录运行时间
+            await BegOperateAsync(token);
+            try
+            {
+                if (!(await GetStatusAsync(token)).GetDetails(out string? message))
+                {
+                    return await EndOperateAsync(false, message, token: token);
+                }
+                return await EndOperateAsync(service.NodeManage.WriteAddress(values), token: token);
+            }
+            catch (Exception ex)
+            {
+                return await EndOperateAsync(false, ex.Message, exception: ex, token: token);
+            }
+        }
+        /// <inheritdoc/>
+        public async Task<OperateResult> WriteAsync(ConcurrentDictionary<string, WriteModel> values, CancellationToken token = default)
+        {
+            await BegOperateAsync(token);
+            if (values == null || values.Count <= 0)
+            {
+                return await EndOperateAsync(false, "数据不能为空", token: token);
+            }
+            ConcurrentDictionary<string, object> param = new ConcurrentDictionary<string, object>();
+            foreach (var item in values)
+            {
+                try
+                {
+                    switch (item.Value.AddressDataType)
+                    {
+                        case Model.@enum.DataType.Byte:
+                            param.TryAdd(item.Key, Convert.ToByte(item.Value.Value));
+                            break;
+                        case Model.@enum.DataType.Bool:
+                            param.TryAdd(item.Key, Convert.ToBoolean(item.Value.Value));
+                            break;
+                        case Model.@enum.DataType.BoolArray:
+                            param.TryAdd(item.Key, item.Value.Value.GetSource<bool[]>());
+                            break;
+                        case Model.@enum.DataType.String:
+                            param.TryAdd(item.Key, Convert.ToString(item.Value.Value));
+                            break;
+                        case Model.@enum.DataType.Char:
+                            param.TryAdd(item.Key, Convert.ToChar(item.Value.Value));
+                            break;
+                        case Model.@enum.DataType.Double:
+                            param.TryAdd(item.Key, Convert.ToDouble(item.Value.Value));
+                            break;
+                        case Model.@enum.DataType.DoubleArray:
+                            param.TryAdd(item.Key, item.Value.Value.GetSource<double[]>());
+                            break;
+                        case Model.@enum.DataType.Single:
+                        case Model.@enum.DataType.Float:
+                            param.TryAdd(item.Key, Convert.ToSingle(item.Value.Value));
+                            break;
+                        case Model.@enum.DataType.SingleArray:
+                        case Model.@enum.DataType.FloatArray:
+                            param.TryAdd(item.Key, item.Value.Value.GetSource<float[]>());
+                            break;
+                        case Model.@enum.DataType.Int:
+                        case Model.@enum.DataType.Int32:
+                            param.TryAdd(item.Key, Convert.ToInt32(item.Value.Value));
+                            break;
+                        case Model.@enum.DataType.IntArray:
+                        case Model.@enum.DataType.Int32Array:
+                            param.TryAdd(item.Key, item.Value.Value.GetSource<int[]>());
+                            break;
+                        case Model.@enum.DataType.Uint:
+                        case Model.@enum.DataType.UInt32:
+                            param.TryAdd(item.Key, Convert.ToUInt32(item.Value.Value));
+                            break;
+                        case Model.@enum.DataType.UintArray:
+                        case Model.@enum.DataType.UInt32Array:
+                            param.TryAdd(item.Key, item.Value.Value.GetSource<uint[]>());
+                            break;
+                        case Model.@enum.DataType.Long:
+                        case Model.@enum.DataType.Int64:
+                            param.TryAdd(item.Key, Convert.ToInt64(item.Value.Value));
+                            break;
+                        case Model.@enum.DataType.LongArray:
+                        case Model.@enum.DataType.Int64Array:
+                            param.TryAdd(item.Key, item.Value.Value.GetSource<long[]>());
+                            break;
+                        case Model.@enum.DataType.Ulong:
+                        case Model.@enum.DataType.UInt64:
+                            param.TryAdd(item.Key, Convert.ToUInt64(item.Value.Value));
+                            break;
+                        case Model.@enum.DataType.UlongArray:
+                        case Model.@enum.DataType.UInt64Array:
+                            param.TryAdd(item.Key, item.Value.Value.GetSource<ulong[]>());
+                            break;
+                        case Model.@enum.DataType.Short:
+                        case Model.@enum.DataType.Int16:
+                            param.TryAdd(item.Key, Convert.ToInt16(item.Value.Value));
+                            break;
+                        case Model.@enum.DataType.ShortArray:
+                        case Model.@enum.DataType.Int16Array:
+                            param.TryAdd(item.Key, item.Value.Value.GetSource<short[]>());
+                            break;
+                        case Model.@enum.DataType.Ushort:
+                        case Model.@enum.DataType.UInt16:
+                            param.TryAdd(item.Key, Convert.ToUInt16(item.Value.Value));
+                            break;
+                        case Model.@enum.DataType.UshortArray:
+                        case Model.@enum.DataType.UInt16Array:
+                            param.TryAdd(item.Key, item.Value.Value.GetSource<ushort[]>());
+                            break;
+                        case Model.@enum.DataType.DateTime:
+                        case Model.@enum.DataType.Date:
+                        case Model.@enum.DataType.Time:
+                            param.TryAdd(item.Key, Convert.ToDateTime(item.Value.Value));
+                            break;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    return OperateResult.CreateFailureResult($"{item.Key} 地址数据类型转换异常:{ex.Message}");
+                }
+            }
+            return await WriteAsync(param, token);
+        }
+        /// <inheritdoc/>
+        public async Task<OperateResult> GetStatusAsync(CancellationToken token = default)
+        {
+            return await EndOperateAsync(IsStart, IsStart ? "已启动" : "未启动", methodName: await BegOperateAsync(token), logOutput: false, token: token);
+        }
+        /// <inheritdoc/>
+        public override void Dispose()
+        {
+            Off(true);
+            base.Dispose();
+        }
+        /// <inheritdoc/>
+        public override async ValueTask DisposeAsync()
+        {
+            await OffAsync(true);
+            await base.DisposeAsync();
+        }
+    }
+}
