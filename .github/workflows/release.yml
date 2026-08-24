@@ -3,7 +3,7 @@ name: Release
 # WPF + Web 统一发布（由原 release.yml + web-release.yml 合并）：
 #   - 单个 GitHub Release 同时包含 WPF 与 Web 全部平台包，Release 标题/标签默认使用 WPF 版本（v1.0.3.0）
 #   - WPF：win-x64 / win-x86
-#   - Web：linux-x64 / win-x64 / win-x86（linux-x86 无 .NET apphost，不支持打包；Docker 镜像另有 arm64）
+#   - Web：linux-x64 / linux-arm64 / win-x64 / win-x86（linux-x86 无 .NET apphost，不支持打包）
 #   - Docker 镜像：linux/amd64 + linux/arm64 推送到 ghcr.io
 #   - Release Notes：自动提取「上一版本 tag → 当前版本」的全部代码提交描述
 # 触发：push v* tag 或手动 workflow_dispatch。
@@ -77,6 +77,8 @@ jobs:
       matrix:
         include:
           - rid: linux-x64
+            archive: tar.gz
+          - rid: linux-arm64
             archive: tar.gz
           - rid: win-x64
             archive: zip
@@ -263,6 +265,7 @@ jobs:
             echo "| WPF win-x64 | \`Snet.Iot.Daq-v${{ steps.wpfver.outputs.VERSION }}-win-x64.zip\` |"
             echo "| WPF win-x86 | \`Snet.Iot.Daq-v${{ steps.wpfver.outputs.VERSION }}-win-x86.zip\` |"
             echo "| Web linux-x64 | \`Snet.Iot.Daq.Web-v${{ steps.webver.outputs.VERSION }}-linux-x64.tar.gz\` |"
+            echo "| Web linux-arm64 | \`Snet.Iot.Daq.Web-v${{ steps.webver.outputs.VERSION }}-linux-arm64.tar.gz\` |"
             echo "| Web win-x64 | \`Snet.Iot.Daq.Web-v${{ steps.webver.outputs.VERSION }}-win-x64.zip\` |"
             echo "| Web win-x86 | \`Snet.Iot.Daq.Web-v${{ steps.webver.outputs.VERSION }}-win-x86.zip\` |"
             echo ""
