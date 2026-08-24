@@ -1,5 +1,15 @@
 name: Release
 
+# WPF + Web 统一发布（由原 release.yml + web-release.yml 合并）：
+#   - 单个 GitHub Release 同时包含 WPF 与 Web 全部平台包，Release 标题/标签默认使用 WPF 版本（v1.0.3.0）
+#   - WPF：win-x64 / win-x86
+#   - Web：linux-x64 / linux-arm64 / linux-x86 / win-x64 / win-x86
+#   - Docker 镜像：linux/amd64 + linux/arm64 推送到 ghcr.io
+#   - Release Notes：自动提取「上一版本 tag → 当前版本」的全部代码提交描述
+# 触发：push v* tag 或手动 workflow_dispatch。
+# 手动触发时重建同名 tag/release（对齐原 release.yml 语义）：否则同名旧 release 存在时
+# 只追加资产，releases 页看不到新版本条目，且新旧资产混在旧条目里。
+
 on:
   push:
     tags:
@@ -8,21 +18,24 @@ on:
 
 permissions:
   contents: write
+  packages: write
 
 jobs:
-  build:
+  # ==================== WPF 构建（win-x64 / win-x86） ====================
+  wpf:
+    name: WPF (${{ matrix.arch }})
     runs-on: windows-latest
     strategy:
+      # 单腿失败不取消其他腿
+      fail-fast: false
       matrix:
         arch: [win-x64, win-x86]
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
-      - name: Read version from .csproj
+      - name: Read WPF version from .csproj
         id: version
         shell: pwsh
         run: |
@@ -36,7 +49,7 @@ jobs:
         with:
           dotnet-version: '10.0.x'
 
-      - name: Build (${{ matrix.arch }})
+      - name: Publish (${{ matrix.arch }})
         run: |
           dotnet publish Snet.Iot.Daq/Snet.Iot.Daq.csproj `
             -c Release `
@@ -55,48 +68,227 @@ jobs:
           name: Snet.Iot.Daq-${{ matrix.arch }}
           path: publish/*.zip
 
+  # ==================== Web 构建（linux-x64/arm64/x86 + win-x64/x86） ====================
+  web:
+    name: Web (${{ matrix.rid }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - rid: linux-x64
+            archive: tar.gz
+          - rid: linux-x86
+            archive: tar.gz
+          - rid: win-x64
+            archive: zip
+          - rid: win-x86
+            archive: zip
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Read Web version from .csproj
+        id: version
+        shell: bash
+        run: |
+          VER=$(grep -oP '<Version>\K[^<]+' Snet.Iot.Daq.Web/Snet.Iot.Daq.Web.csproj | head -1)
+          [ -z "$VER" ] && VER="1.0.0"
+          echo "VERSION=$VER" >> $GITHUB_OUTPUT
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Publish (${{ matrix.rid }})
+        run: |
+          dotnet publish Snet.Iot.Daq.Web/Snet.Iot.Daq.Web.csproj \
+            -c Release \
+            -r ${{ matrix.rid }} \
+            --self-contained false \
+            -p:Version=${{ steps.version.outputs.VERSION }} \
+            -o publish/${{ matrix.rid }}
+
+      - name: Package deploy assets
+        run: |
+          cp Snet.Iot.Daq.Web/README.DEPLOY.md publish/${{ matrix.rid }}/
+          cp -r Snet.Iot.Daq.Web/deploy publish/${{ matrix.rid }}/deploy
+
+      - name: Create archive (${{ matrix.rid }})
+        run: |
+          cd publish/${{ matrix.rid }}
+          if [[ "${{ matrix.archive }}" == "zip" ]]; then
+            zip -qr "../Snet.Iot.Daq.Web-v${{ steps.version.outputs.VERSION }}-${{ matrix.rid }}.zip" .
+          else
+            tar -czf "../Snet.Iot.Daq.Web-v${{ steps.version.outputs.VERSION }}-${{ matrix.rid }}.tar.gz" .
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Snet.Iot.Daq.Web-${{ matrix.rid }}
+          # 每腿只匹配自己的归档扩展名（win=.zip / linux=.tar.gz），避免匹配不到报错
+          path: publish/Snet.Iot.Daq.Web-v*.${{ matrix.archive }}
+          if-no-files-found: error
+
+  # ==================== Docker 镜像（Web，linux/amd64 + linux/arm64） ====================
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Read Web version
+        id: version
+        shell: bash
+        run: |
+          VER=$(grep -oP '<Version>\K[^<]+' Snet.Iot.Daq.Web/Snet.Iot.Daq.Web.csproj | head -1)
+          [ -z "$VER" ] && VER="1.0.0"
+          echo "VERSION=$VER" >> $GITHUB_OUTPUT
+
+      - name: Lowercase repository (ghcr 要求全小写)
+        id: repo
+        shell: bash
+        run: echo "repo=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push multi-arch image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Snet.Iot.Daq.Web/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          # 层缓存存 GitHub Actions cache（跨运行复用）：restore/publish 层命中后大幅缩短构建时间
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          tags: |
+            ghcr.io/${{ steps.repo.outputs.repo }}/snet-iot-daq-web:${{ steps.version.outputs.VERSION }}
+            ghcr.io/${{ steps.repo.outputs.repo }}/snet-iot-daq-web:latest
+
+  # ==================== 汇总发布：单 Release 挂全部资产 ====================
   release:
-    needs: build
+    needs: [wpf, web]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 0 # 完整历史：生成 git log Release Notes 需要
 
-      - name: Read version
-        id: version
+      - name: Read WPF version
+        id: wpfver
         shell: bash
         run: |
           VER=$(grep -oP '<Version>\K[^<]+' Snet.Iot.Daq/Snet.Iot.Daq.csproj | head -1)
+          [ -z "$VER" ] && VER="1.0.0"
           echo "VERSION=$VER" >> $GITHUB_OUTPUT
+
+      - name: Read Web version
+        id: webver
+        shell: bash
+        run: |
+          VER=$(grep -oP '<Version>\K[^<]+' Snet.Iot.Daq.Web/Snet.Iot.Daq.Web.csproj | head -1)
+          [ -z "$VER" ] && VER="1.0.0"
+          echo "VERSION=$VER" >> $GITHUB_OUTPUT
+
+      # 手动触发（workflow_dispatch）时重建同名 tag & release：
+      # 删除历史遗留的旧条目，重新打 tag 并让下方 create 分支生成全新 release 条目
+      # （created=当天、仅含本次资产），releases 页顶部可见。删除与重建均幂等。
+      - name: Delete old tag & release (manual dispatch only)
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          TAG="v${{ steps.wpfver.outputs.VERSION }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git push origin ":refs/tags/$TAG" 2>/dev/null || true
+          git tag -d "$TAG" 2>/dev/null || true
+          gh release delete "$TAG" --yes 2>/dev/null || true
+          git tag -a "$TAG" -m "Release $TAG"
+          git push origin "$TAG"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
+          # 前缀同时匹配 Snet.Iot.Daq-* 与 Snet.Iot.Daq.Web-*（WPF 2 个 + Web 5 个）
           pattern: Snet.Iot.Daq-*
           path: publish
           merge-multiple: true
 
-      - name: Delete old tag & release (manual dispatch only)
-        if: github.event_name == 'workflow_dispatch'
+      # Release Notes：提取「上一版本 tag → 当前版本」的全部提交描述（-s 提交标题），
+      # 并附安装包清单。上一个 tag 取当前 HEAD 父链上最近的 v* tag（git describe）。
+      - name: Generate release notes
+        id: notes
+        shell: bash
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git push origin ":refs/tags/v${{ steps.version.outputs.VERSION }}" 2>/dev/null || true
-          git tag -d "v${{ steps.version.outputs.VERSION }}" 2>/dev/null || true
-          gh release delete "v${{ steps.version.outputs.VERSION }}" --yes 2>/dev/null || true
-          git tag -a "v${{ steps.version.outputs.VERSION }}" -m "Release v${{ steps.version.outputs.VERSION }}"
-          git push origin "v${{ steps.version.outputs.VERSION }}"
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            TAG="v${{ steps.wpfver.outputs.VERSION }}"
+          else
+            TAG="${{ github.ref_name }}"
+          fi
+          git fetch --tags --force
+          PREV=$(git describe --tags --abbrev=0 --match 'v*' HEAD^ 2>/dev/null || true)
+          {
+            echo "## 更新内容"
+            echo ""
+            if [ -n "$PREV" ]; then
+              echo "自上一版本 [\`$PREV\`](${{ github.server_url }}/${{ github.repository }}/compare/$PREV...$TAG) 以来的提交："
+              echo ""
+              git log --no-merges --pretty=format:'- %s' "$PREV..HEAD"
+            else
+              echo "最近提交："
+              echo ""
+              git log --no-merges -30 --pretty=format:'- %s'
+            fi
+            echo ""
+            echo ""
+            echo "## 安装包"
+            echo ""
+            echo "| 平台 | 包 |"
+            echo "| --- | --- |"
+            echo "| WPF win-x64 | \`Snet.Iot.Daq-v${{ steps.wpfver.outputs.VERSION }}-win-x64.zip\` |"
+            echo "| WPF win-x86 | \`Snet.Iot.Daq-v${{ steps.wpfver.outputs.VERSION }}-win-x86.zip\` |"
+            echo "| Web linux-x64 | \`Snet.Iot.Daq.Web-v${{ steps.webver.outputs.VERSION }}-linux-x64.tar.gz\` |"
+            echo "| Web linux-x86 | \`Snet.Iot.Daq.Web-v${{ steps.webver.outputs.VERSION }}-linux-x86.tar.gz\` |"
+            echo "| Web win-x64 | \`Snet.Iot.Daq.Web-v${{ steps.webver.outputs.VERSION }}-win-x64.zip\` |"
+            echo "| Web win-x86 | \`Snet.Iot.Daq.Web-v${{ steps.webver.outputs.VERSION }}-win-x86.zip\` |"
+            echo ""
+            echo "Docker 镜像：\`ghcr.io/${{ github.repository }}/snet-iot-daq-web:${{ steps.webver.outputs.VERSION }}\`"
+          } > NOTES.md
+          echo "path=NOTES.md" >> $GITHUB_OUTPUT
+
+      - name: Create or update GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          name: "v${{ steps.version.outputs.VERSION }}"
-          tag_name: "v${{ steps.version.outputs.VERSION }}"
-          files: publish/*.zip
-          generate_release_notes: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # 标题/标签默认使用 WPF 版本：手动触发用 v$WPF_VERSION；push tag 路径用用户推送的 tag
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            TAG="v${{ steps.wpfver.outputs.VERSION }}"
+          else
+            TAG="${{ github.ref_name }}"
+          fi
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            # 已存在（如删除步骤 push tag 触发的二次运行）：补传资产并刷新 notes
+            gh release upload "$TAG" publish/* --clobber
+            gh release edit "$TAG" --notes-file "${{ steps.notes.outputs.path }}" || true
+          else
+            gh release create "$TAG" publish/* \
+              --title "$TAG" \
+              --notes-file "${{ steps.notes.outputs.path }}"
+          fi
