@@ -226,8 +226,11 @@ jobs:
       - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
-          # 前缀同时匹配 Snet.Iot.Daq-* 与 Snet.Iot.Daq.Web-*（WPF 2 个 + Web 5 个）
-          pattern: Snet.Iot.Daq-*
+          # 必须分别列出两类：Snet.Iot.Daq-* 只匹配 WPF（Daq 后是 -），
+          # 不会匹配 Snet.Iot.Daq.Web-*（Daq 后是 .），漏掉会导致 Web 包不上传
+          pattern: |
+            Snet.Iot.Daq-*
+            Snet.Iot.Daq.Web-*
           path: publish
           merge-multiple: true
 
