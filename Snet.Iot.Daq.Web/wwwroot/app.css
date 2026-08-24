@@ -186,7 +186,7 @@ body {
     left: 0;
     right: 0;
     background: var(--danger);
-    color: #fff;
+    color: var(--text);
     padding: 12px 16px;
     z-index: var(--z-error);
 }
@@ -477,7 +477,7 @@ a:hover { color: var(--primary-hover); }
         gap: 10px;
         margin: 2px 8px;
         padding: 10px 12px;
-        border-radius: 10px;
+        border-radius: var(--radius-sm);
         font-size: 13px;
     }
     .app-nav .nav-item:hover { background: var(--bg-hover); }
@@ -643,14 +643,6 @@ html[lang^="zh"] .modal .form-field > label::after { content: "\FF1A"; }
     min-width: 0;
 }
 .modal .form-field > input[type="checkbox"] { flex: none; }
-/* 弹窗控件高度与圆角统一（输入框/下拉/文本域） */
-.modal .form-field > input:not([type="checkbox"]),
-.modal .form-field > select,
-.modal .form-field > textarea {
-    min-height: 36px;
-    border-radius: 6px;
-}
-.modal .form-field > textarea { min-height: 80px; }
 /* 长说明 / 无控件行：保持块级布局（label 独占一行） */
 .modal .form-field.form-field-block { display: block; }
 .modal .form-field.form-field-block > label {
@@ -1044,7 +1036,7 @@ table.snet-table tr:last-child td:last-child { border-bottom-right-radius: calc(
     align-items: center;
     justify-content: center;
     background: var(--primary-soft);
-    border-radius: 8px;
+    border-radius: var(--radius-sm);
 }
 .modal-title-icon i { font-size: 15px; color: var(--primary); }
 .modal-title-icon-warning { background: var(--warning-soft); }
@@ -1053,7 +1045,7 @@ table.snet-table tr:last-child td:last-child { border-bottom-right-radius: calc(
 .modal-close {
     width: 30px;
     height: 30px;
-    border-radius: 6px;
+    border-radius: var(--radius-sm);
     color: var(--text-secondary);
 }
 .modal-close:hover { background: var(--bg-hover); color: var(--text); }
@@ -1075,7 +1067,7 @@ table.snet-table tr:last-child td:last-child { border-bottom-right-radius: calc(
     margin-bottom: 14px;
     padding: 10px 12px;
     background: var(--surface-2);
-    border-radius: 10px;
+    border-radius: var(--radius-sm);
 }
 .config-summary-item { display: flex; align-items: center; gap: 6px; font-size: 13px; }
 .config-summary-item > i { color: var(--primary); }
@@ -1287,7 +1279,7 @@ html[lang^="zh"] .config-summary-label::after { content: "\FF1A"; }
 .page-item .page-link {
     padding: 6px 12px;
     font-size: 13px;
-    border-radius: 10px;
+    border-radius: var(--radius-sm);
     cursor: pointer;
     user-select: none;
     min-height: 32px;
@@ -1337,7 +1329,7 @@ html[lang^="zh"] .config-summary-label::after { content: "\FF1A"; }
 .tree-meta { font-size: 11px; color: var(--text-secondary); }
 .tree-actions { position: relative; display: flex; align-items: center; gap: 4px; flex: none; }
 /* 操作下拉菜单：竖排卡片式面板。位置自适应：向下弹出（顶部行不被卡片裁剪）、右对齐向左展开（右缘不裁切）、
-   宽度随内容（max-content），按钮靠左自适应宽度不换行 */
+   宽度取最长按钮（max-content，最小 130px），按钮撑满行宽、内容靠左不换行——悬停高亮覆盖整行而非仅内容区 */
 .tree-actions-expand {
     position: absolute;
     right: 0;
@@ -1356,12 +1348,14 @@ html[lang^="zh"] .config-summary-label::after { content: "\FF1A"; }
     -webkit-backdrop-filter: blur(12px);
 }
 .tree-actions-expand.open { display: flex; }
+/* 项目树动作模板的匿名 span 包裹层不参与布局：按钮直接作为面板 flex 子项，保证撑满整行（列布局不靠自动换行） */
+.tree-actions-expand > span { display: contents; }
 .tree-actions-expand .btn {
     display: flex;
     align-items: center;
     justify-content: flex-start;
     gap: 8px;
-    width: auto; /* 宽度随内容自适应，靠左 */
+    width: 100%; /* 撑满整行：悬停高亮覆盖整行而非仅内容区 */
     padding: 7px 10px;
     border: none;
     background: transparent;
@@ -1372,13 +1366,13 @@ html[lang^="zh"] .config-summary-label::after { content: "\FF1A"; }
     cursor: pointer;
     white-space: nowrap;
 }
-.tree-actions-expand .btn:hover { background: var(--bg-hover); }
+.tree-actions-expand .btn:hover { background: var(--bg-hover); transform: none; } /* 菜单项不跟随全局上跳动画 */
 .tree-actions-expand .btn i { color: var(--primary); }
 /* ⋯ 操作按钮：与 device-more-toggle 同款（btn-icon 基准 + 紧凑内边距，不占空间） */
 .tree-actions-toggle {
     padding: 2px 6px;
     color: var(--text-secondary);
-    border-radius: 4px;
+    border-radius: var(--radius-xs);
 }
 .tree-actions-toggle:hover { color: var(--primary); background: var(--bg-hover); }
 
@@ -1443,11 +1437,10 @@ html[lang^="zh"] .config-summary-label::after { content: "\FF1A"; }
     padding: 5px;
     box-sizing: content-box;
     background: var(--primary-soft);
-    border-radius: 8px;
+    border-radius: var(--radius-sm);
     color: var(--primary);
 }
 .detail-toolbar .tree-actions { margin-left: auto; } /* 操作按钮贴最右 */
-.detail-toolbar .tree-actions-expand.open { max-width: 460px; } /* 4 个按钮超出全局 380px 上限 */
 .detail-device-name { font-size: 14px; font-weight: 600; }
 /* 地址选择弹窗：toolbar 与列表各占整行（form-field 默认 flex 行会把两者挤在一行） */
 .modal .form-field:has(.picker-toolbar) {
@@ -1483,7 +1476,7 @@ html[lang^="zh"] .config-summary-label::after { content: "\FF1A"; }
     align-items: center;
     gap: 8px;
     padding: 8px;
-    border-radius: 4px;
+    border-radius: var(--radius-xs);
     cursor: pointer;
     font-size: 13px;
 }
@@ -1573,7 +1566,7 @@ select.pagebar-size, select.form-select {
     align-items: center;
     justify-content: center;
     background: var(--primary-soft);
-    border-radius: 8px;
+    border-radius: var(--radius-sm);
     color: var(--primary);
     font-size: 15px;
 }
@@ -1681,7 +1674,7 @@ html[lang^="zh"] .device-info .row span.label::after { content: "\FF1A"; }
     color: var(--text);
     font-size: 13px;
     text-align: left;
-    border-radius: 4px;
+    border-radius: var(--radius-xs);
     cursor: pointer;
 }
 .device-more-menu button:hover { background: var(--bg-hover); }
@@ -1786,7 +1779,7 @@ html[lang^="zh"] .device-info .row span.label::after { content: "\FF1A"; }
     padding: 10px 12px;
     background: var(--surface-2);
     border: 1px solid var(--border);
-    border-radius: 10px;
+    border-radius: var(--radius-sm);
     /* 状态条定位基准；overflow 裁剪让状态条两端随卡片圆角收角 */
     position: relative;
     overflow: hidden;
@@ -1838,6 +1831,12 @@ html[lang^="zh"] .device-info .row span.label::after { content: "\FF1A"; }
 /* 隐藏的文件选择框（由"上传插件"按钮触发） */
 .upload-input-hidden { display: none; }
 
+/* 插件上传类型下拉：固定窄宽，不参与工具栏弹性伸缩（原内联 style 迁移） */
+.upload-type-select { width: 120px; flex: none; }
+
+/* 服务配置 JSON 编辑区：多行起始高度（原内联 style 迁移） */
+.config-json-input { min-height: 180px; }
+
 /* 上传状态反馈条 */
 .upload-status {
     margin-bottom: 0;
@@ -1868,13 +1867,14 @@ html[lang^="zh"] .device-info .row span.label::after { content: "\FF1A"; }
     .item-card .item-head .tag.mono { display: none; }
     /* spacer 与名称均分剩余空间导致名称过窄：手机端移除 spacer，空间全给名称 */
     .item-card .item-head .spacer { display: none; }
-    /* 操作按钮组展开态改为悬浮面板向左展开（行内展开会撑出视口） */
+    /* 操作菜单：窄屏改为向下弹出（向左+垂直居中的旧方案会让顶部行/工具栏的菜单上半部被视口上缘裁切） */
     .tree-actions { position: relative; }
     .tree-actions-expand.open {
         position: absolute;
-        right: 100%;
-        top: 50%;
-        transform: translateY(-50%);
+        right: 0;
+        top: calc(100% + 4px);
+        transform: none;
+        max-width: calc(100vw - 16px);
         background: var(--glass-pop);
         border: 1px solid var(--border);
         border-radius: var(--radius-md);
@@ -1900,7 +1900,7 @@ html[lang^="zh"] .device-info .row span.label::after { content: "\FF1A"; }
 .result-message {
     padding: 8px 12px;
     border: 1px solid var(--border);
-    border-radius: 4px;
+    border-radius: var(--radius-sm);
     font-size: 13px;
     word-break: break-all;
     white-space: pre-wrap;
@@ -1989,14 +1989,6 @@ html[lang^="zh"] .param-label::after { content: "\FF1A"; }
     border-radius: var(--radius-sm);
     white-space: pre-wrap;
     word-break: break-all;
-}
-
-/* 上传输入（InputFile 样式化） */
-.upload-input {
-    display: inline-block;
-    max-width: 220px;
-    padding: 6px;
-    font-size: 12px;
 }
 
 /* 加载中 */
@@ -2244,10 +2236,21 @@ select:focus, textarea:focus {
 @media (max-width: 767px) {
     .app-nav .nav-item {
         transition: color .15s, background var(--dur-fast);
+        /* 窄屏 7 项导航：标签可收缩省略，不换行撑破 Tab */
+        min-width: 0;
+        padding: 6px 2px 4px;
+        gap: 1px;
+    }
+    .app-nav .nav-item span {
+        display: block;
+        max-width: 100%;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
     }
     .app-nav .nav-item.active {
         background: var(--nav-active-bg);
-        border-radius: 12px;
+        border-radius: var(--radius-md);
     }
 }
 
@@ -2528,6 +2531,8 @@ table.snet-table td { transition: background-color var(--dur-fast); }
     min-height: 38px;
     border-radius: var(--radius-sm);
 }
+/* 多行文本域：38px 组规则按单行控件统一，textarea 补回舒展高度（单行控件组规则后写会覆盖 80px 基准） */
+.modal .form-field > textarea { min-height: 80px; }
 
 /* 3. 只读信息行：虚线框 + 透明底，明确"信息展示"而非"可编辑" */
 .modal .form-field > input[disabled],

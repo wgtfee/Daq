@@ -295,6 +295,15 @@ namespace Snet.Iot.Daq.Core {
         }
         
         /// <summary>
+        ///   查找类似 修改设备配置 的本地化字符串。
+        /// </summary>
+        public static string 修改设备配置 {
+            get {
+                return ResourceManager.GetString("修改设备配置", resourceCulture);
+            }
+        }
+        
+        /// <summary>
         ///   查找类似 修改项 的本地化字符串。
         /// </summary>
         public static string 修改项 {

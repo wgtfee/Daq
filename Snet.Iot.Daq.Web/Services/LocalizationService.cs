@@ -64,6 +64,7 @@ public class LocalizationService
         ["数据字节序格式"] = "Data byte order format",
         ["数据字节序格式不合法"] = "Invalid data byte order format",
         ["组包设置已保存"] = "Auto pack settings saved",
+        ["String解包是否按字反转字节"] = "Does String unpacking reverse bytes by word",
         ["组包已移除"] = "Auto pack removed",
         ["移除组包"] = "Remove Auto Pack",
         ["WebApi 设置"] = "WebApi Settings",

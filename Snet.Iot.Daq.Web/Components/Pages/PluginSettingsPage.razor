@@ -33,7 +33,7 @@
     @if (_tab == 0)
     {
         <div class="toolbar">
-            <select class="form-select" style="width:120px" @bind="_uploadType">
+            <select class="form-select upload-type-select" @bind="_uploadType">
                 <option value="Daq">Daq</option>
                 <option value="Mq">Mq</option>
             </select>
@@ -375,6 +375,10 @@
                 }
             </select>
         </div>
+        <div class="form-field">
+            <label>@T("String解包是否按字反转字节")</label>
+            <input type="checkbox" @bind="_isStringReverseByteWord" />
+        </div>
         <div class="modal-footer">
             @if (_autoPackConfig.AutoPack is not null)
             {
@@ -443,6 +447,7 @@
     private PluginConfigModel? _autoPackConfig;
     private int _autoPackMaxByteLength = 200;
     private string _autoPackFormat = "ABCD";
+    private bool _isStringReverseByteWord = false;
     /// <summary>WebApi 设置弹窗状态（对齐 WPF SettingsWebApi/UpdateWebApi/RemoveWebApi）</summary>
     private PluginConfigModel? _webApiConfig;
     private string _webApiIp = "";
@@ -779,7 +784,8 @@
         {
             if (hotUpdate)
             {
-                stoppedDevices = await StopDevicesUsingPluginAsync(type, zipName);
+                // 停用使用该插件的运行设备（类名→包名映射由 RuntimeManager 统一处理，对齐 WPF libPath == DaqPluginPath 判定）
+                stoppedDevices = await RuntimeManager.StopDevicesUsingPluginAsync(type, zipName);
                 // 卸载程序集前优雅停止 UA/MQTT 服务端：释放监听端口。
                 // 否则旧服务端 socket 僵尸占用端口（程序集卸载后无法优雅关闭），
                 // 新服务端绑定失败，客户端连上僵尸报 "Unexpected error while processing a Hello message" / BadDecodingError
@@ -859,9 +865,10 @@
         }
         finally
         {
-            // 恢复热更新前正在运行的设备（只恢复本次停掉的，不复活用户手动停止的）
+            // 恢复热更新前正在运行的设备（只恢复本次停掉的，不复活用户手动停止的）。
+            // 对齐 WPF PrivateInit：更新完成后走 Retry（重置计时 → 停止 → 用新插件重建 handler 后启动采集）
             foreach (var rt in stoppedDevices)
-                await rt.CollectAsync();
+                await rt.RetryAsync();
             // 感知更新：同步设备底层版本号（设备卡展示热更新后的新版本）
             AppState.NotifyEntityChanged();
         }
@@ -902,24 +909,6 @@
             try { Directory.Delete(p.TempPath, true); } catch { /* 清理失败不影响主流程 */ }
         }
         _uploading = false;
-    }
-
-    /// <summary>停用使用该插件的运行设备并返回列表（MQ 插件影响所有转发设备，全部暂停）</summary>
-    private async Task<List<DeviceRuntime>> StopDevicesUsingPluginAsync(PluginType type, string pluginName)
-    {
-        var stopped = new List<DeviceRuntime>();
-        foreach (var rt in RuntimeManager.Runtimes)
-        {
-            var match = type == PluginType.Daq
-                ? rt.DeviceType == pluginName
-                : rt.IsRun; // MQ 插件与设备关联在地址转发中，简化：全部停止
-            if (match && rt.IsRun)
-            {
-                await rt.StopAsync();
-                stopped.Add(rt);
-            }
-        }
-        return stopped;
     }
 
     /// <summary>保存插件清单（写门串行 + 重试写，对齐 ProjectConfig 落盘方式）。失败抛 IOException（调用方 catch 提示）</summary>
@@ -969,24 +958,15 @@
         if (selected is null) return;
         await OperateInfoAsync($"移除插件：{selected.Name}");
         var path = selected.PluginDetails?.Path;
-        // 同 dll 目录（Path 一致）的全部插件条目（对齐 WPF PrivateRemovalPlugin：删目录后一并清列表，不留幽灵条目）
-        var sharedNames = _plugins
-            .Where(p => SamePluginPath(p.PluginDetails?.Path, path))
-            .Select(p => p.Name)
-            .ToList();
         var coreOk = false;
         try
         {
-            // 停用相关设备（对齐 WPF 按 Path 停设备：同包内所有插件名的设备都受影响）
-            if (selected.Type == PluginType.Daq)
-            {
-                foreach (var name in sharedNames)
-                    await StopDevicesUsingPluginAsync(PluginType.Daq, name);
-            }
-            else
-            {
-                await StopDevicesUsingPluginAsync(PluginType.Mq, selected.Name);
-            }
+            // 停用相关设备（对齐 WPF 按 Path 停设备：同包内所有插件名的设备都受影响）。
+            // 包名 = 插件目录名（lib/{type}/{包名}），类名→包名映射由 RuntimeManager 统一处理
+            var packName = string.IsNullOrEmpty(path)
+                ? selected.Name
+                : Path.GetFileName(Path.TrimEndingDirectorySeparator(path));
+            await RuntimeManager.StopDevicesUsingPluginAsync(selected.Type, packName);
             // 传 className（Core 按插件名实时扫描 lib 目录定位），传路径会查不到导致永远失败
             coreOk = await PluginHandlerCore.PluginOperate.RemovePluginAsync(selected.Name);
             if (coreOk && !string.IsNullOrEmpty(path) && Directory.Exists(path))
@@ -1603,6 +1583,7 @@
         _autoPackConfig = item;
         _autoPackMaxByteLength = item.AutoPack?.MaxByteLength ?? 200;
         _autoPackFormat = (item.AutoPack?.Format ?? DataFormat.ABCD).ToString();
+        _isStringReverseByteWord = item.AutoPack?.IsStringReverseByteWord ?? false;
     }
 
     private void CloseAutoPack() => _autoPackConfig = null;
@@ -1617,8 +1598,10 @@
             Toast.Error(T("数据字节序格式不合法"));
             return;
         }
-        item.AutoPack = new AddressAutoPackModel { MaxByteLength = _autoPackMaxByteLength, Format = format };
+        item.AutoPack = new AddressAutoPackModel { MaxByteLength = _autoPackMaxByteLength, Format = format, IsStringReverseByteWord = _isStringReverseByteWord };
         await SavePluginConfigFileAsync();
+        // 感知更新：项目树引用/控制台设备同步刷新；运行中设备自动重启重订阅（对齐 WPF SetPlugin → RefreshAsync → Retry）
+        AppState.NotifyEntityChanged();
         Toast.Success(T("组包设置已保存"));
     }
 
@@ -1629,6 +1612,7 @@
         _autoPackConfig = null;
         item.AutoPack = null;
         await SavePluginConfigFileAsync();
+        AppState.NotifyEntityChanged();
         Toast.Success(T("组包已移除"));
     }
 
@@ -1654,6 +1638,8 @@
         }
         item.WebApi = new WAModel(_webApiIp, _webApiPort, _webApiCrossDomain);
         await SavePluginConfigFileAsync();
+        // 感知更新：同上，运行设备自动重启使新 WebApi 参数生效
+        AppState.NotifyEntityChanged();
         Toast.Success(T("WebApi 设置已保存"));
     }
 
@@ -1664,6 +1650,7 @@
         _webApiConfig = null;
         item.WebApi = null;
         await SavePluginConfigFileAsync();
+        AppState.NotifyEntityChanged();
         Toast.Success(T("WebApi 已移除"));
     }
 

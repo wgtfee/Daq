@@ -1,4 +1,4 @@
-﻿using Snet.Core.handler;
+using Snet.Core.handler;
 using Snet.Iot.Daq.Core.data;
 using Snet.Iot.Daq.Core.@interface;
 using Snet.Iot.Daq.Core.opc.ua.service;
@@ -141,6 +141,13 @@ namespace Snet.Iot.Daq.data
         /// 缓存地址选择视图模型
         /// </summary>
         public static readonly SelectAddressModel addressModel = address.DataContext.GetSource<SelectAddressModel>();
+
+        /// <summary>
+        /// 缓存插件设置视图模型（懒加载单例）<br/>
+        /// 供项目设置等页面直接复用其自动组包 / WebApi 的设置、修改、移除操作
+        /// </summary>
+        private static PluginSettingsModel? _pluginSettings;
+        public static PluginSettingsModel pluginSettings => _pluginSettings ??= new PluginSettingsModel();
 
         /// <summary>
         /// 默认文件路径

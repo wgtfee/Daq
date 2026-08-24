@@ -341,6 +341,113 @@ namespace Snet.Iot.Daq.viewModel
                 }
             }
         }
+
+
+
+        /// <summary>
+        /// 复制唯一标识符
+        /// </summary>
+        public IAsyncRelayCommand CopySN => copySN ??= new AsyncRelayCommand(CopySNAsync);
+        private IAsyncRelayCommand? copySN;
+        private Task CopySNAsync()
+        {
+            System.Windows.Clipboard.SetDataObject(ProjectNodeSelectedItem.DaqDetails.SN);
+            return Task.CompletedTask;
+        }
+
+
+        /// <summary>
+        /// 设置自动组包
+        /// </summary>
+        public IAsyncRelayCommand SettingsAutoPack => p_SettingsAutoPack ??= new AsyncRelayCommand(SettingsAutoPackAsync);
+        private IAsyncRelayCommand p_SettingsAutoPack;
+        private async Task SettingsAutoPackAsync()
+        {
+            if (ProjectNodeSelectedItem?.DaqDetails is not { } config)
+                return;
+
+            PluginSettingsModel pluginSettings = GlobalConfigModel.pluginSettings;
+            pluginSettings.PluginConfigSelectedItem = config;
+            await pluginSettings.SettingsAutoPack.ExecuteAsync(null);
+        }
+
+        /// <summary>
+        /// 修改自动组包
+        /// </summary>
+        public IAsyncRelayCommand UpdateAutoPack => p_UpdateAutoPack ??= new AsyncRelayCommand(UpdateAutoPackAsync);
+        private IAsyncRelayCommand p_UpdateAutoPack;
+        private async Task UpdateAutoPackAsync()
+        {
+            if (ProjectNodeSelectedItem?.DaqDetails is not { } config)
+                return;
+
+            PluginSettingsModel pluginSettings = GlobalConfigModel.pluginSettings;
+            pluginSettings.PluginConfigSelectedItem = config;
+            await pluginSettings.UpdateAutoPack.ExecuteAsync(null);
+        }
+
+        /// <summary>
+        /// 移除自动组包
+        /// </summary>
+        public IAsyncRelayCommand RemoveAutoPack => p_RemoveAutoPack ??= new AsyncRelayCommand(RemoveAutoPackAsync);
+        private IAsyncRelayCommand p_RemoveAutoPack;
+        private async Task RemoveAutoPackAsync()
+        {
+            if (ProjectNodeSelectedItem?.DaqDetails is not { } config)
+                return;
+
+            PluginSettingsModel pluginSettings = GlobalConfigModel.pluginSettings;
+            pluginSettings.PluginConfigSelectedItem = config;
+            await pluginSettings.RemoveAutoPack.ExecuteAsync(null);
+        }
+
+
+        /// <summary>
+        /// 设置 WEBapi
+        /// </summary>
+        public IAsyncRelayCommand SettingsWebApi => p_SettingsWebApi ??= new AsyncRelayCommand(SettingsWebApiAsync);
+        private IAsyncRelayCommand p_SettingsWebApi;
+        private async Task SettingsWebApiAsync()
+        {
+            if (ProjectNodeSelectedItem?.DaqDetails is not { } config)
+                return;
+
+            PluginSettingsModel pluginSettings = GlobalConfigModel.pluginSettings;
+            pluginSettings.PluginConfigSelectedItem = config;
+            await pluginSettings.SettingsWebApi.ExecuteAsync(null);
+        }
+
+        /// <summary>
+        /// 修改 WEBapi
+        /// </summary>
+        public IAsyncRelayCommand UpdateWebApi => p_UpdateWebApi ??= new AsyncRelayCommand(UpdateWebApiAsync);
+        private IAsyncRelayCommand p_UpdateWebApi;
+        private async Task UpdateWebApiAsync()
+        {
+            if (ProjectNodeSelectedItem?.DaqDetails is not { } config)
+                return;
+
+            PluginSettingsModel pluginSettings = GlobalConfigModel.pluginSettings;
+            pluginSettings.PluginConfigSelectedItem = config;
+            await pluginSettings.UpdateWebApi.ExecuteAsync(null);
+        }
+
+        /// <summary>
+        /// 删除 WEBapi
+        /// </summary>
+        public IAsyncRelayCommand RemoveWebApi => p_RemoveWebApi ??= new AsyncRelayCommand(RemoveWebApiAsync);
+        private IAsyncRelayCommand p_RemoveWebApi;
+        private async Task RemoveWebApiAsync()
+        {
+            if (ProjectNodeSelectedItem?.DaqDetails is not { } config)
+                return;
+
+            PluginSettingsModel pluginSettings = GlobalConfigModel.pluginSettings;
+            pluginSettings.PluginConfigSelectedItem = config;
+            await pluginSettings.RemoveWebApi.ExecuteAsync(null);
+        }
+
+
         #endregion
 
         #region 界面事件

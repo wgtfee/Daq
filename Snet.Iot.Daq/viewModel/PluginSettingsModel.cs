@@ -780,6 +780,7 @@ namespace Snet.Iot.Daq.viewModel
                 Directory.CreateDirectory(GlobalConfigModel.UiConfigPath);
             }
             PluginHandlerCore.SavePluginUIConfig(PluginConfig, GlobalConfigModel.UI_PluginConfigPath);
+            GlobalConfigModel.RefreshAsync();
         }
 
         /// <summary>
@@ -792,6 +793,7 @@ namespace Snet.Iot.Daq.viewModel
                 Directory.CreateDirectory(GlobalConfigModel.UiConfigPath);
             }
             PluginHandlerCore.SavePluginUIConfig(PluginList, GlobalConfigModel.UI_PluginListConfigPath);
+            GlobalConfigModel.RefreshAsync();
         }
         #endregion
 

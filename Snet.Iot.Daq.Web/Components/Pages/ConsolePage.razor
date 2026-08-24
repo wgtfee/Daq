@@ -1,4 +1,4 @@
-﻿@page "/console"
+@page "/console"
 @rendermode @(new InteractiveServerRenderMode(prerender: false))
 @inherits LocalizedComponentBase
 @using Microsoft.AspNetCore.Authorization
@@ -190,7 +190,7 @@
     <ModalDialog Title="@T("修改服务配置")" TitleIcon="bi-gear" OnClose="CloseServerConfig">
         <div class="form-field">
             <label>@T("服务配置")</label>
-            <textarea class="mono param-json" style="min-height:180px" @bind="_serverConfigJson"></textarea>
+            <textarea class="mono param-json config-json-input" @bind="_serverConfigJson"></textarea>
         </div>
         <div class="modal-footer">
             <button class="btn" @onclick="CloseServerConfig"><i class="bi bi-x-lg"></i>@T("取消")</button>

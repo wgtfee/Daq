@@ -29,7 +29,6 @@ namespace Snet.Iot.Daq
             this._settings = settings;
             LanguageHandler.OnLanguageEventAsync += LanguageHandler_OnLanguageEventAsync;
             LanguageHandler_OnLanguageEventAsync(this, new EventLanguageResult()).Wait();
-
         }
 
         /// <summary>

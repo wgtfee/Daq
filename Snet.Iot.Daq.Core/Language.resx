@@ -766,4 +766,7 @@
   <data name="插件版本" xml:space="preserve">
     <value>插件版本</value>
   </data>
+  <data name="修改设备配置" xml:space="preserve">
+    <value>修改设备配置</value>
+  </data>
 </root>

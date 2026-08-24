@@ -1,4 +1,4 @@
-﻿using Snet.Iot.Daq.Core.data;
+using Snet.Iot.Daq.Core.data;
 using Snet.Iot.Daq.Core.handler;
 using Snet.Iot.Daq.Core.opc.ua.service;
 using Snet.Model.data;
@@ -10,7 +10,7 @@ namespace Snet.Iot.Daq.Web.Services;
 
 /// <summary>
 /// Daq 宿主服务：进程生命周期编排（对齐 WPF App.xaml.cs Init + ConsoleModel 的服务启动）。
-/// 启动：加载配置 → InitPlugin 加载插件程序集 → 启动 UA/MQTT 服务端；停止：逆序释放。
+/// 启动：加载配置 → 启动 UA/MQTT 服务端（先于插件加载，服务端不依赖插件程序集，避免插件加载耗时/失败阻塞）→ InitPlugin 加载插件程序集 → 同步设备；停止：逆序释放。
 /// </summary>
 public class DaqHostedService : BackgroundService
 {
@@ -47,10 +47,12 @@ public class DaqHostedService : BackgroundService
         try
         {
             await _appState.LoadAllAsync();
+            // 服务端先于插件加载初始化：UA/MQTT 服务端只依赖配置与地址数据（LoadAllAsync 已就绪），
+            // 不依赖插件程序集。提前就位避免插件加载耗时/失败阻塞服务端；
+            // 软启设备在 SyncFromProjects 后立即采集时服务端已可接收数据（对齐 WPF 服务端先行语义）
+            await InitServerServicesAsync();
             InitPlugins();
             _runtimeManager.SyncFromProjects(_appState);
-            // 启动内嵌服务端（对齐 WPF ConsoleModel.InitAsync：读 config/server/*.json 自动启动 UA/MQTT）
-            await InitServerServicesAsync();
             _sampler.Start();
             _loggerBuffer.Push(string.Format(T("[Info] Daq 宿主启动完成，设备 {0} 台"), _runtimeManager.Runtimes.Count()));
         }
@@ -118,8 +120,9 @@ public class DaqHostedService : BackgroundService
     #region 服务端启动
     public async Task InitServerServicesAsync()
     {
-        await InitMqttServerAsync();
+        // 对齐 WPF ConsoleModel.InitAsync：OPC UA 服务端先启动，再启动 MQTT
         await InitUaServerAsync();
+        await InitMqttServerAsync();
         _appState.NotifyServerStateChanged();
     }
 

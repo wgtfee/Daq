@@ -1,4 +1,4 @@
-﻿using Opc.Ua;
+using Opc.Ua;
 using Snet.Core.handler;
 using Snet.Iot.Daq.Core.data;
 using Snet.Iot.Daq.Core.handler;
@@ -164,7 +164,14 @@ public class DeviceRuntime : IAsyncDisposable
         _daqConfig = deviceNode.DaqDetails!;
         _deviceNode = deviceNode;
         var newDict = ProjectHandlerCore.ToAddressMqDictionary(deviceNode.Details ?? new());
-        var signature = _daqConfig.Param + "|" + string.Join("|", newDict.Keys.Select(k => k.Guid).OrderBy(g => g, StringComparer.Ordinal));
+        // 变更签名：参数 + 组包 + WebApi + 地址集（对齐 WPF SettingsAsync 每次刷新都重启运行设备——
+        // 组包/WebApi 不在 Param JSON 里，必须单独纳入签名，否则修改后运行设备不会自动重订阅）
+        var ap = _daqConfig.AutoPack;
+        var wa = _daqConfig.WebApi;
+        var autoPackSig = ap is null ? "0" : $"{ap.MaxByteLength}|{ap.Format}|{ap.IsStringReverseByteWord}";
+        var webApiSig = wa is null ? "0" : $"{wa.IpAddress}|{wa.Port}|{wa.CrossDomain}";
+        var signature = _daqConfig.Param + "|" + autoPackSig + "|" + webApiSig + "|"
+            + string.Join("|", newDict.Keys.Select(k => k.Guid).OrderBy(g => g, StringComparer.Ordinal));
         var changed = signature != _settingsSignature;
         _settingsSignature = signature;
         _addressDatas = newDict;
@@ -754,7 +761,7 @@ public class DeviceRuntime : IAsyncDisposable
     {
         _bytesHandler ??= await BytesHandler.InstanceAsync(DeviceName);
 
-        OperateResult result = await _bytesHandler.TransformAsync(addressValue.ResultValue.GetSource<byte[]>(), addressValue.Time, bm);
+        OperateResult result = await _bytesHandler.TransformAsync(addressValue.ResultValue.GetSource<byte[]>(), addressValue.Time, bm, isStringReverseByteWord: _daqConfig.AutoPack?.IsStringReverseByteWord ?? false);
         if (!result.GetDetails(out ConcurrentDictionary<string, AddressValue>? res))
         {
             ThrottledLog($"{DeviceHierarchy}, {addressValue.AddressName} - {string.Format(T("解包失败：{0}"), result.Message)}", "t:" + addressValue.AddressName);

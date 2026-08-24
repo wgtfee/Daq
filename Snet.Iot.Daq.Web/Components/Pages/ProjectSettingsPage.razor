@@ -18,7 +18,7 @@
 <div class="card project-card">
     <div class="card-header">
         <h1 class="card-title"><i class="bi bi-diagram-3 me-2"></i>@T("项目设置")</h1>
-        <div style="display:flex;gap:8px">
+        <div class="toolbar">
             <InputFile OnChange="@OnImportProjectAsync" accept=".json" multiple="false" class="upload-input-hidden" />
             <button class="btn btn-sm" @onclick="TriggerProjectImport"><i class="bi bi-file-earmark-arrow-down"></i>@T("导入")</button>
             <button class="btn btn-sm" @onclick="ExportProjectAsync"><i class="bi bi-file-earmark-arrow-up"></i>@T("导出")</button>
@@ -282,6 +282,65 @@
     </ModalDialog>
 }
 
+@if (_autoPackTarget is not null)
+{
+    <ModalDialog Title="@T("组包设置")" TitleIcon="bi-boxes" OnClose="CloseAutoPack">
+        <div class="form-field">
+            <label>@T("单次批量读取的最大字节数")</label>
+            <input type="number" @bind="_autoPackMaxByteLength" />
+        </div>
+        <div class="form-field">
+            <label>@T("数据字节序格式")</label>
+            <select @bind="_autoPackFormat">
+                @foreach (var fmt in Enum.GetNames(typeof(DataFormat)))
+                {
+                    <option value="@fmt">@fmt</option>
+                }
+            </select>
+        </div>
+        <div class="form-field">
+            <label>@T("String解包是否按字反转字节")</label>
+            <input type="checkbox" @bind="_isStringReverseByteWord" />
+        </div>
+        <div class="modal-footer">
+            @if (_autoPackTarget.AutoPack is not null)
+            {
+                <button class="btn btn-danger" @onclick="RemoveAutoPackAsync"><i class="bi bi-trash"></i>@T("移除组包")</button>
+            }
+            <span class="spacer"></span>
+            <button class="btn" @onclick="CloseAutoPack"><i class="bi bi-x-lg"></i>@T("取消")</button>
+            <button class="btn btn-primary" @onclick="SaveAutoPackAsync"><i class="bi bi-check-lg"></i>@T("保存")</button>
+        </div>
+    </ModalDialog>
+}
+
+@if (_webApiTarget is not null)
+{
+    <ModalDialog Title="@T("WebApi 设置")" TitleIcon="bi-globe" OnClose="CloseWebApi">
+        <div class="form-field">
+            <label>@T("Ip 地址")</label>
+            <input @bind="_webApiIp" />
+        </div>
+        <div class="form-field">
+            <label>@T("端口")</label>
+            <input type="number" @bind="_webApiPort" />
+        </div>
+        <div class="form-field">
+            <label>@T("跨域")</label>
+            <input type="checkbox" @bind="_webApiCrossDomain" />
+        </div>
+        <div class="modal-footer">
+            @if (_webApiTarget.WebApi is not null)
+            {
+                <button class="btn btn-danger" @onclick="RemoveWebApiAsync"><i class="bi bi-trash"></i>@T("移除 WebApi")</button>
+            }
+            <span class="spacer"></span>
+            <button class="btn" @onclick="CloseWebApi"><i class="bi bi-x-lg"></i>@T("取消")</button>
+            <button class="btn btn-primary" @onclick="SaveWebApiAsync"><i class="bi bi-check-lg"></i>@T("保存")</button>
+        </div>
+    </ModalDialog>
+}
+
     <Toast />
 @code {
     private bool _showAddDialog;
@@ -379,6 +438,8 @@
         }
         else if (node.NodeType == ProjectNodeType.Device)
         {
+            <button class="btn btn-sm" @onclick="() => OpenAutoPack(node)"><i class="bi bi-boxes"></i>@T("组包")</button>
+            <button class="btn btn-sm" @onclick="() => OpenWebApi(node)"><i class="bi bi-globe"></i>WebApi</button>
             <button class="btn btn-sm btn-danger" @onclick="() => ConfirmRemoveNode(node)"><i class="bi bi-trash"></i>@T("删除")</button>
         }
     </span>;
@@ -744,6 +805,113 @@
     }
 
     private void CloseTestResult() => _testResult = null;
+
+    // ================= 组包 / WebApi 设置（对齐 WPF SettingsAutoPack/UpdateAutoPack/RemoveAutoPack + SettingsWebApi 系列，支持感知更新） =================
+    private PluginConfigModel? _autoPackTarget;
+    private int _autoPackMaxByteLength = 200;
+    private string _autoPackFormat = "ABCD";
+    private bool _isStringReverseByteWord;
+
+    /// <summary>打开组包设置（已存在 → 修改，不存在 → 新建；弹窗内可移除）</summary>
+    private void OpenAutoPack(IProjectTreeViewModel node)
+    {
+        if (node.DaqDetails is not { } config) return;
+        _autoPackTarget = config;
+        _autoPackMaxByteLength = config.AutoPack?.MaxByteLength ?? 200;
+        _autoPackFormat = (config.AutoPack?.Format ?? DataFormat.ABCD).ToString();
+        _isStringReverseByteWord = config.AutoPack?.IsStringReverseByteWord ?? false;
+    }
+
+    private void CloseAutoPack() => _autoPackTarget = null;
+
+    private async Task SaveAutoPackAsync()
+    {
+        var item = _autoPackTarget;
+        if (item is null) return;
+        _autoPackTarget = null;
+        if (!Enum.TryParse<DataFormat>(_autoPackFormat, out var format))
+        {
+            ToastSvc.Error(T("数据字节序格式不合法"));
+            return;
+        }
+        item.AutoPack = new AddressAutoPackModel { MaxByteLength = _autoPackMaxByteLength, Format = format, IsStringReverseByteWord = _isStringReverseByteWord };
+        await SavePluginConfigFileAsync();
+        // 感知更新：项目树引用/插件页同步刷新；运行中设备由 DeviceRuntimeManager 感知后自动重启重订阅（对齐 WPF SetPlugin → RefreshAsync → Retry）
+        AppState.NotifyEntityChanged();
+        ToastSvc.Success(T("组包设置已保存"));
+    }
+
+    private async Task RemoveAutoPackAsync()
+    {
+        var item = _autoPackTarget;
+        if (item is null) return;
+        _autoPackTarget = null;
+        item.AutoPack = null;
+        await SavePluginConfigFileAsync();
+        AppState.NotifyEntityChanged();
+        ToastSvc.Success(T("组包已移除"));
+    }
+
+    private PluginConfigModel? _webApiTarget;
+    private string _webApiIp = "";
+    private int _webApiPort = 80;
+    private bool _webApiCrossDomain;
+
+    /// <summary>打开 WebApi 设置（已存在 → 修改，不存在 → 新建；弹窗内可移除）</summary>
+    private void OpenWebApi(IProjectTreeViewModel node)
+    {
+        if (node.DaqDetails is not { } config) return;
+        _webApiTarget = config;
+        _webApiIp = config.WebApi?.IpAddress ?? "";
+        _webApiPort = config.WebApi?.Port ?? 80;
+        _webApiCrossDomain = config.WebApi?.CrossDomain ?? false;
+    }
+
+    private void CloseWebApi() => _webApiTarget = null;
+
+    private async Task SaveWebApiAsync()
+    {
+        var item = _webApiTarget;
+        if (item is null) return;
+        _webApiTarget = null;
+        if (string.IsNullOrWhiteSpace(_webApiIp))
+        {
+            ToastSvc.Warning(T("Ip 地址不能为空"));
+            return;
+        }
+        item.WebApi = new WAModel(_webApiIp, _webApiPort, _webApiCrossDomain);
+        await SavePluginConfigFileAsync();
+        // 感知更新：同上，运行设备自动重启使新 WebApi 参数生效
+        AppState.NotifyEntityChanged();
+        ToastSvc.Success(T("WebApi 设置已保存"));
+    }
+
+    private async Task RemoveWebApiAsync()
+    {
+        var item = _webApiTarget;
+        if (item is null) return;
+        _webApiTarget = null;
+        item.WebApi = null;
+        await SavePluginConfigFileAsync();
+        AppState.NotifyEntityChanged();
+        ToastSvc.Success(T("WebApi 已移除"));
+    }
+
+    /// <summary>落盘 PluginConfig.json（写门串行 + 重试写，供组包/WebApi 轻量更新复用）</summary>
+    private async Task SavePluginConfigFileAsync()
+    {
+        await AppState.ConfigSaveGate.WaitAsync();
+        try
+        {
+            var list = new ObservableCollection<PluginConfigModel>(AppState.PluginDict.Values.OrderBy(p => p.Index));
+            if (!await ProjectHandlerCore.WriteToFileWithRetryAsync(WebPaths.PluginConfigPath, list.ToJson(true)))
+                ToastSvc.Error(T("插件配置写入失败"));
+        }
+        finally
+        {
+            AppState.ConfigSaveGate.Release();
+        }
+    }
 
     // ================= 写入 / 移除所有（对齐 WPF ProjectDetailsModel.WriteAsync / RemoveAllAsync） =================
     private IProjectDetailsTreeViewModel? _writeTarget;

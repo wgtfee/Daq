@@ -30,5 +30,16 @@ namespace Snet.Iot.Daq.Core.data
             set => SetProperty(ref format, value);
         }
         private DataFormat format = DataFormat.ABCD;
+
+        /// <summary>
+        /// String 解包是否按字反转字节
+        /// </summary>
+        [Description("String 解包是否按字反转字节")]
+        public bool IsStringReverseByteWord
+        {
+            get => isStringReverseByteWord;
+            set => SetProperty(ref isStringReverseByteWord, value);
+        }
+        private bool isStringReverseByteWord = false;
     }
 }

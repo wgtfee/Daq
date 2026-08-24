@@ -1,4 +1,6 @@
-﻿using System.Collections.Concurrent;
+using Snet.Iot.Daq.Core.data;
+using Snet.Iot.Daq.Core.handler;
+using System.Collections.Concurrent;
 
 namespace Snet.Iot.Daq.Web.Services;
 
@@ -68,6 +70,57 @@ public class DeviceRuntimeManager
     }
 
     public DeviceRuntime? Get(string guid) => _runtimes.TryGetValue(guid, out var rt) ? rt : null;
+
+    /// <summary>
+    /// 停止使用指定插件的运行设备并返回列表（插件更新/移除前调用，恢复采集用）。
+    /// 对齐 WPF UploadPluginAsync / PrivateRemovalPlugin 的停设备语义：
+    /// 设备插件类型是插件类名（如 SiemensOperate），插件包名是目录名（如 Snet.Siemens），
+    /// 二者不一致，必须经 PluginList 的 Name → 包目录名 映射关联（等价 WPF libPath == DaqPluginPath 判定）。
+    /// MQ 插件与设备关联在地址转发中，简化：全部运行设备停止。
+    /// </summary>
+    /// <param name="type">插件类型</param>
+    /// <param name="packageName">插件包名（lib/{type}/{包名} 目录名，如 Snet.Siemens）</param>
+    public async Task<List<DeviceRuntime>> StopDevicesUsingPluginAsync(Snet.Model.@enum.PluginType type, string packageName)
+    {
+        var stopped = new List<DeviceRuntime>();
+        if (string.IsNullOrWhiteSpace(packageName)) return stopped;
+        // 插件类名 → 包目录名 映射（重复 Name 取首条，异常残留无害降级）
+        var deviceToPack = LoadPluginList()
+            .Where(p => !string.IsNullOrWhiteSpace(p.PluginDetails?.Path))
+            .GroupBy(p => p.Name, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key,
+                g => Path.GetFileName(Path.TrimEndingDirectorySeparator(g.First().PluginDetails!.Path)),
+                StringComparer.OrdinalIgnoreCase);
+        foreach (var rt in Runtimes)
+        {
+            // 类名 == 包名的插件（单类插件）直接命中；多类插件走映射
+            var match = type == Snet.Model.@enum.PluginType.Daq
+                ? rt.IsRun && (rt.DeviceType.Equals(packageName, StringComparison.OrdinalIgnoreCase)
+                    || (deviceToPack.TryGetValue(rt.DeviceType, out var pack)
+                        && pack.Equals(packageName, StringComparison.OrdinalIgnoreCase)))
+                : rt.IsRun; // MQ 插件与设备关联在地址转发中，简化：全部停止
+            if (match)
+            {
+                await rt.StopAsync();
+                stopped.Add(rt);
+            }
+        }
+        return stopped;
+    }
+
+    /// <summary>从 PluginList.json 读取插件清单（类名 → 包目录名 映射数据源）</summary>
+    private static List<PluginListModel> LoadPluginList()
+    {
+        if (!File.Exists(WebPaths.PluginListConfigPath)) return new();
+        try
+        {
+            return PluginHandlerCore.GetPluginUIConfig<System.Collections.ObjectModel.ObservableCollection<PluginListModel>>(WebPaths.PluginListConfigPath)?.ToList() ?? new();
+        }
+        catch
+        {
+            return new();
+        }
+    }
 
     public async Task StopAllAsync()
     {

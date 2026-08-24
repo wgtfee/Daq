@@ -965,7 +965,7 @@ namespace Snet.Iot.Daq.viewModel
         {
             bytesHandler ??= await BytesHandler.InstanceAsync(DeviceName);
 
-            OperateResult result = await bytesHandler.TransformAsync(addressValue.ResultValue.GetSource<byte[]>(), addressValue.Time, bm);
+            OperateResult result = await bytesHandler.TransformAsync(addressValue.ResultValue.GetSource<byte[]>(), addressValue.Time, bm, isStringReverseByteWord: DaqData.AutoPack?.IsStringReverseByteWord ?? false);
             if (!result.GetDetails(out ConcurrentDictionary<string, AddressValue>? res))
             {
                 await ResultMsgAsync(DaqData, EventInfoResult.CreateFailureResult($"{DeviceHierarchyToolTip}, {addressValue.AddressName} - 解包失败：" + result.Message));

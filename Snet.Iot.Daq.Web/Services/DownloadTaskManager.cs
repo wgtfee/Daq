@@ -1,4 +1,4 @@
-﻿using Snet.Iot.Daq.Core.data;
+using Snet.Iot.Daq.Core.data;
 using Snet.Iot.Daq.Core.handler;
 
 namespace Snet.Iot.Daq.Web.Services;
@@ -212,23 +212,10 @@ public class DownloadTaskManager
                         if (isHotUpdate)
                         {
                             _logger.Push($"[Info] 检测到同名插件 {name}，执行热更新");
-                            // 停使用该插件的 DAQ 设备：设备类型是插件类名（如 SiemensOperate），下载名是包名（如 Snet.Siemens），
-                            // 通过 PluginList 的 Name → 包目录名 映射关联（对齐 WPF libPath == DaqPluginPath 语义）
-                            // BUG 修复：ToDictionary 在 PluginList 出现重复 Name（异常残留/手改）时会抛
-                            // "相同键已存在"，导致整个自动安装中断。改为 GroupBy 取首条，重复条目无害降级。
-                            var deviceToPack = LoadPluginList()
-                                .Where(p => !string.IsNullOrWhiteSpace(p.PluginDetails.Path))
-                                .GroupBy(p => p.Name, StringComparer.OrdinalIgnoreCase)
-                                .ToDictionary(g => g.Key,
-                                    g => Path.GetFileName(Path.TrimEndingDirectorySeparator(g.First().PluginDetails.Path)),
-                                    StringComparer.OrdinalIgnoreCase);
-                            foreach (var rt in _runtimeManager.Runtimes.Where(rt => rt.IsRun && type == Snet.Model.@enum.PluginType.Daq
-                                && deviceToPack.TryGetValue(rt.DeviceType, out var pack)
-                                && pack.Equals(name, StringComparison.OrdinalIgnoreCase)))
-                            {
-                                await rt.StopAsync();
-                                stopped.Add(rt);
-                            }
+                            // 停用使用该插件的运行设备：设备插件类型是插件类名（如 SiemensOperate），
+                            // 下载名是包名（如 Snet.Siemens），类名→包名映射由 RuntimeManager 统一处理
+                            // （对齐 WPF libPath == DaqPluginPath 语义）
+                            stopped = await _runtimeManager.StopDevicesUsingPluginAsync(type, name);
                             // 卸载程序集前优雅停止 UA/MQTT 服务端：释放监听端口，防僵尸 socket 占用导致新服务端绑定失败
                             try { await _hosted.StopServerServicesAsync(); }
                             catch (Exception ex) { _logger.Push($"[Error] 服务端停止失败: {ex.Message}"); }
@@ -284,11 +271,12 @@ public class DownloadTaskManager
         }
         finally
         {
-            // 恢复热更新前正在运行的设备（只恢复本次停掉的）
+            // 恢复热更新前正在运行的设备（只恢复本次停掉的）。
+            // 对齐 WPF PrivateInit：更新完成后走 Retry（重置计时 → 停止 → 用新插件重建 handler 后启动采集）
             // 单个设备恢复失败不影响其他设备与安装结果（异常不外抛覆盖 installed 计数）
             foreach (var rt in stopped)
             {
-                try { await rt.CollectAsync(); }
+                try { await rt.RetryAsync(); }
                 catch (Exception ex)
                 {
                     _logger.Push($"[Error] 热更新后恢复设备采集失败 {rt.DeviceName}: {ex.Message}");

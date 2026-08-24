@@ -323,6 +323,149 @@
                                         </Style>
                                     </Separator.Style>
                                 </Separator>
+                                <!--  新增右键菜单  -->
+                                <uis:MenuItem
+                                    snet:ResxLocalizationProvider.DefaultAssembly="Snet.Iot.Daq.Core"
+                                    snet:ResxLocalizationProvider.DefaultDictionary="Language"
+                                    Command="{Binding CopySN}"
+                                    Header="{snet:Loc 复制唯一标识符}"
+                                    Icon="{uis:SymbolIcon Symbol=Copy24,
+                                                          Filled=False}">
+                                    <uis:MenuItem.Style>
+                                        <Style BasedOn="{StaticResource UiMenuItem}" TargetType="uis:MenuItem">
+                                            <Setter Property="Visibility" Value="Collapsed" />
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding PlacementTarget.DataContext.ProjectNodeSelectedItem.NodeType, RelativeSource={RelativeSource AncestorType=ContextMenu}}" Value="Device">
+                                                    <Setter Property="Visibility" Value="Visible" />
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </uis:MenuItem.Style>
+                                </uis:MenuItem>
+                                <uis:MenuItem
+                                    snet:ResxLocalizationProvider.DefaultAssembly="Snet.Iot.Daq.Core"
+                                    snet:ResxLocalizationProvider.DefaultDictionary="Language"
+                                    Command="{Binding SettingsAutoPack}"
+                                    Header="{snet:Loc 设置自动组包}"
+                                    Icon="{uis:SymbolIcon Symbol=ArchiveSettings16,
+                                                          Filled=False}">
+                                    <uis:MenuItem.Style>
+                                        <Style BasedOn="{StaticResource UiMenuItem}" TargetType="uis:MenuItem">
+                                            <Setter Property="Visibility" Value="Collapsed" />
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding PlacementTarget.DataContext.ProjectNodeSelectedItem.NodeType, RelativeSource={RelativeSource AncestorType=ContextMenu}}" Value="Device">
+                                                    <Setter Property="Visibility" Value="Visible" />
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </uis:MenuItem.Style>
+                                </uis:MenuItem>
+                                <uis:MenuItem
+                                    snet:ResxLocalizationProvider.DefaultAssembly="Snet.Iot.Daq.Core"
+                                    snet:ResxLocalizationProvider.DefaultDictionary="Language"
+                                    Command="{Binding UpdateAutoPack}"
+                                    Header="{snet:Loc 修改自动组包}"
+                                    Icon="{uis:SymbolIcon Symbol=ArrowRepeatAll16,
+                                                          Filled=False}">
+                                    <uis:MenuItem.Style>
+                                        <Style BasedOn="{StaticResource UiMenuItem}" TargetType="uis:MenuItem">
+                                            <Setter Property="Visibility" Value="Collapsed" />
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding PlacementTarget.DataContext.ProjectNodeSelectedItem.NodeType, RelativeSource={RelativeSource AncestorType=ContextMenu}}" Value="Device">
+                                                    <Setter Property="Visibility" Value="Visible" />
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </uis:MenuItem.Style>
+                                </uis:MenuItem>
+                                <uis:MenuItem
+                                    snet:ResxLocalizationProvider.DefaultAssembly="Snet.Iot.Daq.Core"
+                                    snet:ResxLocalizationProvider.DefaultDictionary="Language"
+                                    Command="{Binding SettingsWebApi}"
+                                    Header="{snet:Loc 设置WebApi}"
+                                    Icon="{uis:SymbolIcon Symbol=WifiSettings20,
+                                                          Filled=False}">
+                                    <uis:MenuItem.Style>
+                                        <Style BasedOn="{StaticResource UiMenuItem}" TargetType="uis:MenuItem">
+                                            <Setter Property="Visibility" Value="Collapsed" />
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding PlacementTarget.DataContext.ProjectNodeSelectedItem.NodeType, RelativeSource={RelativeSource AncestorType=ContextMenu}}" Value="Device">
+                                                    <Setter Property="Visibility" Value="Visible" />
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </uis:MenuItem.Style>
+                                </uis:MenuItem>
+                                <uis:MenuItem
+                                    Margin="0,0,0,3"
+                                    snet:ResxLocalizationProvider.DefaultAssembly="Snet.Iot.Daq.Core"
+                                    snet:ResxLocalizationProvider.DefaultDictionary="Language"
+                                    Command="{Binding UpdateWebApi}"
+                                    Header="{snet:Loc 修改WebApi}"
+                                    Icon="{uis:SymbolIcon Symbol=ArrowRepeatAll16,
+                                                          Filled=False}">
+                                    <uis:MenuItem.Style>
+                                        <Style BasedOn="{StaticResource UiMenuItem}" TargetType="uis:MenuItem">
+                                            <Setter Property="Visibility" Value="Collapsed" />
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding PlacementTarget.DataContext.ProjectNodeSelectedItem.NodeType, RelativeSource={RelativeSource AncestorType=ContextMenu}}" Value="Device">
+                                                    <Setter Property="Visibility" Value="Visible" />
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </uis:MenuItem.Style>
+                                </uis:MenuItem>
+                                <Separator>
+                                    <Separator.Style>
+                                        <Style BasedOn="{StaticResource MaterialDesignSeparator}" TargetType="Separator">
+                                            <Setter Property="Visibility" Value="Collapsed" />
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding PlacementTarget.DataContext.ProjectNodeSelectedItem.NodeType, RelativeSource={RelativeSource AncestorType=ContextMenu}}" Value="Device">
+                                                    <Setter Property="Visibility" Value="Visible" />
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </Separator.Style>
+                                </Separator>
+                                <uis:MenuItem
+                                    Margin="0,3,0,0"
+                                    snet:ResxLocalizationProvider.DefaultAssembly="Snet.Iot.Daq.Core"
+                                    snet:ResxLocalizationProvider.DefaultDictionary="Language"
+                                    Command="{Binding RemoveAutoPack}"
+                                    Header="{snet:Loc 移除自动组包}"
+                                    Icon="{uis:SymbolIcon Symbol=DeleteDismiss20,
+                                                          Filled=False}">
+                                    <uis:MenuItem.Style>
+                                        <Style BasedOn="{StaticResource UiMenuItem}" TargetType="uis:MenuItem">
+                                            <Setter Property="Visibility" Value="Collapsed" />
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding PlacementTarget.DataContext.ProjectNodeSelectedItem.NodeType, RelativeSource={RelativeSource AncestorType=ContextMenu}}" Value="Device">
+                                                    <Setter Property="Visibility" Value="Visible" />
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </uis:MenuItem.Style>
+                                </uis:MenuItem>
+
+                                <uis:MenuItem
+                                    Margin="0,0,0,3"
+                                    snet:ResxLocalizationProvider.DefaultAssembly="Snet.Iot.Daq.Core"
+                                    snet:ResxLocalizationProvider.DefaultDictionary="Language"
+                                    Command="{Binding RemoveWebApi}"
+                                    Header="{snet:Loc 移除WebApi}"
+                                    Icon="{uis:SymbolIcon Symbol=DeleteDismiss20,
+                                                          Filled=False}">
+                                    <uis:MenuItem.Style>
+                                        <Style BasedOn="{StaticResource UiMenuItem}" TargetType="uis:MenuItem">
+                                            <Setter Property="Visibility" Value="Collapsed" />
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding PlacementTarget.DataContext.ProjectNodeSelectedItem.NodeType, RelativeSource={RelativeSource AncestorType=ContextMenu}}" Value="Device">
+                                                    <Setter Property="Visibility" Value="Visible" />
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </uis:MenuItem.Style>
+                                </uis:MenuItem>
 
                                 <uis:MenuItem
                                     snet:ResxLocalizationProvider.DefaultAssembly="Snet.Iot.Daq.Core"
